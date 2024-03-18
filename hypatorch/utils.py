@@ -181,8 +181,9 @@ def create_mask(x, x_length):
             S.append(s)
 
         mask = torch.stack(S).to(x.device)
-        ## convert to int tensor
-        #mask = mask.type(torch.int)
+        ## make mask the same dtype as x
+        mask = mask.to(x.dtype)
+
         return mask
     
 def create_mask_same_shape( x, x_length ):
@@ -199,7 +200,10 @@ def create_mask_same_shape( x, x_length ):
         for index, length in enumerate( x_length ):
             S[ index, ..., :length ] = 1.0
 
-    return S.to( x.device )
+    S = S.to( x.device )
+    S = S.to( x.dtype )
+
+    return S
 
 class LengthHarmonizer( torch.nn.Module ):
     def __init__(
