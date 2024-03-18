@@ -22,7 +22,7 @@ setup(
     description='HypaTorch: A library for abstract and visual model configuration',
     author='Altavo GmbH',
     url='https://github.com/Altavo/hypatorch/',
-    license='MIT',
+    license='Apache 2.0',
     long_description_content_type='text/markdown',
     long_description=open('README.md').read(),
     packages=['hypatorch'],
