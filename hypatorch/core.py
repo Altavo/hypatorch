@@ -304,15 +304,16 @@ class Model( L.LightningModule ):
         with context:
             if 'fn' in mapping[ submodule_name ]:
                 fn = getattr( submodule, mapping[ submodule_name ][ 'fn' ] )
+                fn_to_inspect = fn
             else:
-                #fn = submodule.forward
+                fn_to_inspect = submodule.forward
                 fn = submodule.__call__
 
             output_key_map = mapping[ submodule_name ][ 'outputs' ]
             inputs = mapping[ submodule_name][ 'inputs' ]
 
-            expected_inputs = get_input_variable_names( fn )
-            expected_outputs = get_output_variable_names( fn )
+            expected_inputs = get_input_variable_names( fn_to_inspect )
+            expected_outputs = get_output_variable_names( fn_to_inspect )
 
             validate_io_keys(
                 module_name = submodule_name,
