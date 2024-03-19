@@ -424,13 +424,16 @@ class Model( L.LightningModule ):
                 )
 
             # Backward Pass if self.losses is not empty list
+            opt = opts[ operation_idx ]
             if self.losses:
-                opt = opts[ operation_idx ]
+                #opt = opts[ operation_idx ]
                 self._backward_pass(
                     opt = opt,
                     loss = loss,
                     batch_idx = batch_idx,
                     )
+            else:
+                opt.step()
             
             self._handle_assessments(
                 assessments = self.metrics,
