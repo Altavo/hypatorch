@@ -5,4 +5,4 @@ from hypatorch.losses import MMAE_Loss
 from hypatorch.losses import MSE_Loss
 from hypatorch.losses import MMSE_Loss
 
-__version__ = '0.1.1'
+__version__ = '0.1.2'
