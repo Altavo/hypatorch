@@ -549,7 +549,10 @@ class Model( L.LightningModule ):
             operation_name = operation_name,
             mode = mode,
             )
-        loss = sum(loss_dict.values())
+        if loss_dict:
+            loss = sum( loss_dict.values() )
+        else:
+            loss = None
         return output_dict, loss
     
     def _handle_assessments(
@@ -575,7 +578,7 @@ class Model( L.LightningModule ):
                     #sync_dist=False, #TODO: check if this is necessary
                 )
         else:
-            assessments_dict = {}
+            assessments_dict = None
         return assessments_dict
 
     def predict_step(self, batch, batch_idx):
