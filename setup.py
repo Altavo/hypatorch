@@ -3,7 +3,7 @@ from setuptools import setup
 install_requires = [
     'torch',
     'hydra-core',
-    'lightning'
+    'lightning',
     'omegaconf',
     ]
 
