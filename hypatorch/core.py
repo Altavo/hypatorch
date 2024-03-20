@@ -222,14 +222,16 @@ class Model( L.LightningModule ):
             self,
             data_dict,
             assessments,
+            mode,
             ):
         x = {}
         
         for fn in assessments:
-            y = fn(
-                data_dict = data_dict,
-                )
-            x[ fn.name ] = y
+            if fn.apply is None or mode in fn.apply:
+                y = fn(
+                    data_dict = data_dict,
+                    )
+                x[ fn.name ] = y
 
         return x
     
@@ -569,6 +571,7 @@ class Model( L.LightningModule ):
             assessments_dict = self._compute_assessments(
                 data_dict = data_dict,
                 assessments = assessments[ operation_name ],
+                mode = mode,
                 )
             for k, v in assessments_dict.items():
                 self.log(
