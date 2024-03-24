@@ -427,6 +427,8 @@ class Model( L.LightningModule ):
 
             # Backward Pass if self.losses is not empty list
             opt = opts[ operation_idx ]
+            self.toggle_optimizer( opt )
+
             if self.losses:
                 #opt = opts[ operation_idx ]
                 self._backward_pass(
@@ -446,6 +448,8 @@ class Model( L.LightningModule ):
                 operation_name = operation_name,
                 mode = mode,
                 )
+            
+            self.untoggle_optimizer( opt )
 
         return loss
 
