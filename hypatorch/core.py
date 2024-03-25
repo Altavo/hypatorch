@@ -350,7 +350,21 @@ class Model( L.LightningModule ):
                     )
             
             sm_out_dict = { key: value for key, value in zip( expected_outputs, submodule_out ) }
-            x = { key_map: sm_out_dict[ key ] for key, key_map in output_key_map.items() }
+            #x = { key_map: sm_out_dict[ key ] for key, key_map in output_key_map.items() }
+            x = {}
+            for key, key_map in output_key_map.items():
+                if isinstance( key_map, str ):
+                    x[ key_map ] = sm_out_dict[ key ]
+                elif isinstance( key_map, List ) or isinstance( key_map, ListConfig ):
+                    for idx, km in enumerate( key_map ):
+                        x[ km ] = sm_out_dict[ key ][ idx ]
+                else:
+                    raise ValueError(
+                        f"""
+                        Error with output key mapping of {submodule_name}.
+                        Expected a string or a list, but got {type(key_map)}.
+                        """
+                        )
 
         return x
     
