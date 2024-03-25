@@ -438,7 +438,6 @@ class Model( L.LightningModule ):
         input_dict = batch
 
         opts = self.optimizers()
-        scheds = self.lr_schedulers()
 
         # check if opts is iterable, if not, make it iterable
         if not isinstance( opts, list ):
@@ -456,7 +455,6 @@ class Model( L.LightningModule ):
 
             # Backward Pass if self.losses is not empty list
             opt = opts[ operation_idx ]
-            self.toggle_optimizer( opt )
 
             if self.losses: 
                 #opt = opts[ operation_idx ]
@@ -468,7 +466,6 @@ class Model( L.LightningModule ):
             else:
                 opt.step()
             
-            # Update schedulers.
             self.lr_scheduler_step( operation_idx )
 
             self._handle_assessments(
@@ -481,8 +478,6 @@ class Model( L.LightningModule ):
                 mode = mode,
                 )
             
-            self.untoggle_optimizer( opt )
-
         return loss
 
     def validation_step(self, batch, batch_idx):
