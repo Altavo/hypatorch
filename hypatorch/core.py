@@ -435,7 +435,10 @@ class Model( L.LightningModule ):
 
             # Forward Pass
             operation_out, loss = self._forward_pass(
-                input_dict = input_dict,
+                input_dict = shared_dict(
+                    input_dict,
+                    output_dict,
+                    ),
                 operation_name = operation_name,
                 mode = mode,
                 )
@@ -482,7 +485,10 @@ class Model( L.LightningModule ):
             # Forward Pass
             with torch.no_grad():
                 operation_out, loss = self._forward_pass(
-                    input_dict = input_dict,
+                    input_dict = shared_dict(
+                        input_dict,
+                        output_dict,
+                        ),
                     operation_name = operation_name,
                     mode = mode,
                     )
@@ -646,7 +652,10 @@ class Model( L.LightningModule ):
             # Forward Pass
             with torch.no_grad():
                 operation_out, loss = self._forward_pass(
-                    input_dict = input_dict,
+                    input_dict = shared_dict(
+                        input_dict,
+                        output_dict,
+                        ),
                     operation_name = operation_name,
                     mode = mode,
                     )
