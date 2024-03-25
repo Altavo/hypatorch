@@ -418,17 +418,13 @@ class Model( L.LightningModule ):
         
         interval = sched_config.get('interval', 'step')
         frequency = sched_config.get('frequency', 1)
-        metric = sched_config.get('metric', None)
 
-        if metric is not None:
-            sched.step(metric)
-        else:
-            if interval == 'step':
-                if self.global_step % frequency == 0:
-                    sched.step()
-            elif interval == 'epoch':
-                if self.current_epoch > sched.last_epoch:
-                    sched.step()
+        if interval == 'step':
+            if self.global_step % frequency == 0:
+                sched.step()
+        elif interval == 'epoch':
+            if self.current_epoch > sched.last_epoch:
+                sched.step()
         return        
 
     def training_step(self, batch, batch_idx):
