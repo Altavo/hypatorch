@@ -354,7 +354,21 @@ class Model( L.LightningModule ):
                     )
             
             sm_out_dict = { key: value for key, value in zip( expected_outputs, submodule_out ) }
-            x = { key_map: sm_out_dict[ key ] for key, key_map in output_key_map.items() }
+            #x = { key_map: sm_out_dict[ key ] for key, key_map in output_key_map.items() }
+            x = {}
+            for key, key_map in output_key_map.items():
+                if isinstance( key_map, str ):
+                    x[ key_map ] = sm_out_dict[ key ]
+                elif isinstance( key_map, List ) or isinstance( key_map, ListConfig ):
+                    for idx, km in enumerate( key_map ):
+                        x[ km ] = sm_out_dict[ key ][ idx ]
+                else:
+                    raise ValueError(
+                        f"""
+                        Error with output key mapping of {submodule_name}.
+                        Expected a string or a list, but got {type(key_map)}.
+                        """
+                        )
 
         return x
     
@@ -432,6 +446,7 @@ class Model( L.LightningModule ):
         mode = 'train'
         
         input_dict = batch
+        output_dict = {}
 
         opts = self.optimizers()
 
@@ -443,16 +458,22 @@ class Model( L.LightningModule ):
             operation_name = list( self.operations.keys() )[ operation_idx ]
 
             # Forward Pass
-            output_dict, loss = self._forward_pass(
+            operation_out, loss = self._forward_pass(
                 input_dict = input_dict,
                 operation_name = operation_name,
                 mode = mode,
+                )
+            
+            output_dict = self._handle_operation_output(
+                x = operation_out,
+                output_dict = output_dict,
+                operation_name = operation_name,
                 )
 
             # Backward Pass if self.losses is not empty list
             opt = opts[ operation_idx ]
 
-            if self.losses: 
+            if self.losses[ operation_name ]:
                 #opt = opts[ operation_idx ]
                 self._backward_pass(
                     opt = opt,
@@ -481,16 +502,23 @@ class Model( L.LightningModule ):
         mode = 'val'
         
         input_dict = batch
+        output_dict = {}
 
         for operation_idx, _ in enumerate( self.operations ):
             operation_name = list( self.operations.keys() )[ operation_idx ]
             # Forward Pass
             with torch.no_grad():
-                output_dict, loss = self._forward_pass(
+                operation_out, loss = self._forward_pass(
                     input_dict = input_dict,
                     operation_name = operation_name,
                     mode = mode,
                     )
+                
+            output_dict = self._handle_operation_output(
+                x = operation_out,
+                output_dict = output_dict,
+                operation_name = operation_name,
+                )
             
             # handle metrics
             self._handle_assessments(
@@ -613,22 +641,49 @@ class Model( L.LightningModule ):
         else:
             assessments_dict = None
         return assessments_dict
+    
+    def _handle_operation_output(
+            self,
+            x,
+            output_dict,
+            operation_name,
+            ):
+        if not any( x in output_dict.keys() for x in x.keys() ):
+            output_dict.update( x )
+        else:
+            raise ValueError(
+                f"""
+                Error with output_dict of {operation_name}.
+                Operations are not allowed to overwrite existing keys.
+                However, {operation_name} has the following keys: {x.keys()}
+                and the output_dict has the following keys: {output_dict.keys()}.
+                """
+                )
+        return output_dict
 
     def predict_step(self, batch, batch_idx):
 
         mode = 'test'
 
         input_dict = batch
+        output_dict = {}
 
         for operation_idx, _ in enumerate( self.operations ):
             operation_name = list( self.operations.keys() )[ operation_idx ]
             # Forward Pass
             with torch.no_grad():
-                output_dict, loss = self._forward_pass(
+                operation_out, loss = self._forward_pass(
                     input_dict = input_dict,
                     operation_name = operation_name,
                     mode = mode,
                     )
+                
+            output_dict = self._handle_operation_output(
+                x = operation_out,
+                output_dict = output_dict,
+                operation_name = operation_name,
+                )
+            
             
         data_dict = shared_dict(
             input_dict,
