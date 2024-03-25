@@ -441,7 +441,7 @@ class Model( L.LightningModule ):
 
             # Backward Pass if self.losses is not empty list
             opt = opts[ operation_idx ]
-            if self.losses:
+            if self.losses[ operation_name ]:
                 #opt = opts[ operation_idx ]
                 self._backward_pass(
                     opt = opt,
