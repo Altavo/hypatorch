@@ -77,7 +77,7 @@ class Model( L.LightningModule ):
         ## Losses and metrics
         self.losses = self._get_content( 'losses' )
         self.metrics = self._get_content( 'metrics' )
-
+        self.lr_scheduler_config = []
 
         # Lightning does not accept gradient accumulation or clipping
         # as arguments if optimization is manual. Therefore, we need to
@@ -278,13 +278,17 @@ class Model( L.LightningModule ):
                     'scheduler': opt[ 'lr_scheduler' ]['scheduler'](optimizer),
                 }
 
-                # add the other keys to the dict
+                d['lr_scheduler'] = sch
+
+                # Store the scheduler configuration separately, as it will be ignored by Lightning.
+                # https://lightning.ai/docs/pytorch/stable/common/optimization.html 
+                sched_config = {}
                 for k, v in opt[ 'lr_scheduler' ].items():
                     if k != 'scheduler':
-                        sch[k] = v
+                        sched_config[k] = v
 
-                d['lr_scheduler'] = sch
-            
+                self.lr_scheduler_config.append(sched_config)
+
             optimizers.append( d )
 
         return optimizers
@@ -403,6 +407,30 @@ class Model( L.LightningModule ):
 
         return output_dict
 
+    def lr_scheduler_step(self, 
+                          operation_idx: int) -> None:
+        
+        sched = self.lr_schedulers()[ operation_idx ]
+        sched_config = self.lr_scheduler_config[ operation_idx ]
+
+        if sched is None:
+            return
+        
+        interval = sched_config.get('interval', 'step')
+        frequency = sched_config.get('frequency', 1)
+        metric = sched_config.get('metric', None)
+
+        if metric is not None:
+            sched.step(metric)
+        else:
+            if interval == 'step':
+                if self.global_step % frequency == 0:
+                    sched.step()
+            elif interval == 'epoch':
+                if self.current_epoch > sched.last_epoch:
+                    sched.step()
+        return        
+
     def training_step(self, batch, batch_idx):
 
         mode = 'train'
@@ -410,6 +438,7 @@ class Model( L.LightningModule ):
         input_dict = batch
 
         opts = self.optimizers()
+        scheds = self.lr_schedulers()
 
         # check if opts is iterable, if not, make it iterable
         if not isinstance( opts, list ):
@@ -429,7 +458,7 @@ class Model( L.LightningModule ):
             opt = opts[ operation_idx ]
             self.toggle_optimizer( opt )
 
-            if self.losses:
+            if self.losses: 
                 #opt = opts[ operation_idx ]
                 self._backward_pass(
                     opt = opt,
@@ -439,6 +468,9 @@ class Model( L.LightningModule ):
             else:
                 opt.step()
             
+            # Update schedulers.
+            self.lr_scheduler_step( operation_idx )
+
             self._handle_assessments(
                 assessments = self.metrics,
                 data_dict = shared_dict(
