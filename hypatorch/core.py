@@ -453,11 +453,16 @@ class Model( L.LightningModule ):
                 )
 
         # Note: if not specified, interval defaults to 'epoch' and frequency defaults to 1.
-        if lr_scheduler_config.interval == 'step' and self.global_step % lr_scheduler_config.frequency == 0:
-            lr_scheduler_config.scheduler.step()
-        elif lr_scheduler_config.interval == 'epoch':
-            if self.current_epoch % lr_scheduler_config.frequency == 0 and self.current_epoch > 0:
+        if lr_scheduler_config.interval == 'step':
+            if self.global_step % lr_scheduler_config.frequency == 0:
                 lr_scheduler_config.scheduler.step()
+        elif lr_scheduler_config.interval == 'epoch':
+            if self.trainer.is_last_batch:
+                if (self.current_epoch + 1) % lr_scheduler_config.frequency == 0:
+                    lr_scheduler_config.scheduler.step()
+        else:
+            raise ValueError(f"Invalid interval {lr_scheduler_config.interval} for lr_scheduler_config.")
+        
         return
     
 
