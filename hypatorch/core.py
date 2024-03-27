@@ -77,7 +77,7 @@ class Model( L.LightningModule ):
         ## Losses and metrics
         self.losses = self._get_content( 'losses' )
         self.metrics = self._get_content( 'metrics' )
-
+        self.lr_scheduler_config = []
 
         # Lightning does not accept gradient accumulation or clipping
         # as arguments if optimization is manual. Therefore, we need to
@@ -278,13 +278,17 @@ class Model( L.LightningModule ):
                     'scheduler': opt[ 'lr_scheduler' ]['scheduler'](optimizer),
                 }
 
-                # add the other keys to the dict
+                d['lr_scheduler'] = sch
+
+                # Store the scheduler configuration separately, as it will be ignored by Lightning.
+                # https://lightning.ai/docs/pytorch/stable/common/optimization.html 
+                sched_config = {}
                 for k, v in opt[ 'lr_scheduler' ].items():
                     if k != 'scheduler':
-                        sch[k] = v
+                        sched_config[k] = v
 
-                d['lr_scheduler'] = sch
-            
+                self.lr_scheduler_config.append(sched_config)
+
             optimizers.append( d )
 
         return optimizers
@@ -417,6 +421,26 @@ class Model( L.LightningModule ):
 
         return output_dict
 
+    def lr_scheduler_step(self, 
+                          operation_idx: int) -> None:
+        
+        sched = self.lr_schedulers()[ operation_idx ]
+        sched_config = self.lr_scheduler_config[ operation_idx ]
+
+        if sched is None:
+            return
+        
+        interval = sched_config.get('interval', 'step')
+        frequency = sched_config.get('frequency', 1)
+
+        if interval == 'step':
+            if self.global_step % frequency == 0:
+                sched.step()
+        elif interval == 'epoch':
+            if self.current_epoch > sched.last_epoch:
+                sched.step()
+        return        
+
     def training_step(self, batch, batch_idx):
 
         mode = 'train'
@@ -451,6 +475,7 @@ class Model( L.LightningModule ):
 
             # Backward Pass if self.losses is not empty list
             opt = opts[ operation_idx ]
+
             if self.losses[ operation_name ]:
                 #opt = opts[ operation_idx ]
                 self._backward_pass(
@@ -461,6 +486,8 @@ class Model( L.LightningModule ):
             else:
                 opt.step()
             
+            self.lr_scheduler_step( operation_idx )
+
             self._handle_assessments(
                 assessments = self.metrics,
                 data_dict = shared_dict(
@@ -470,7 +497,7 @@ class Model( L.LightningModule ):
                 operation_name = operation_name,
                 mode = mode,
                 )
-
+            
         return loss
 
     def validation_step(self, batch, batch_idx):
