@@ -1,6 +1,7 @@
 import torch
 import inspect
 from omegaconf import DictConfig
+from omegaconf import ListConfig
 
 from typing import Iterable
 from typing import Union
@@ -154,7 +155,7 @@ def get_module_input(
         ):
     submodule_in = {}
     for k, v in inputs.items():
-        if isinstance( v, list ):
+        if isinstance( v, List ) or isinstance( v, ListConfig):
             submodule_in[ k ] = [
                 _get_module_input(
                     k = k,
