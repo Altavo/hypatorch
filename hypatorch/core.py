@@ -505,7 +505,8 @@ class Model( L.LightningModule ):
             else:
                 opt.step()
 
-            self.lr_scheduler_step( scheds[ operation_name ] )
+            if scheds is not None:
+                self.lr_scheduler_step( scheds[ operation_name ] )
             
             self._handle_assessments(
                 assessments = self.metrics,
