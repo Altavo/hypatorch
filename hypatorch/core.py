@@ -666,6 +666,17 @@ class Model( L.LightningModule ):
                 operation_name = operation_name,
                 )
             
+            # handle metrics
+            self._handle_assessments(
+                assessments = self.metrics,
+                data_dict = shared_dict(
+                    input_dict,
+                    output_dict,
+                    ),
+                operation_name = operation_name,
+                mode = mode,
+                )
+            
             
         data_dict = shared_dict(
             input_dict,
