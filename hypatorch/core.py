@@ -659,15 +659,20 @@ class Model( L.LightningModule ):
                     operation_name = operation_name,
                     mode = mode,
                     )
+            
+            detached_loss_dict = { k: v.detach() for k, v in loss.items() }
                 
             output_dict = self._handle_operation_output(
-                x = operation_out,
+                x = shared_dict(
+                    operation_out,
+                    detached_loss_dict,
+                    ),
                 output_dict = output_dict,
                 operation_name = operation_name,
                 )
             
             # handle metrics
-            self._handle_assessments(
+            metric_dict = self._handle_assessments(
                 assessments = self.metrics,
                 data_dict = shared_dict(
                     input_dict,
@@ -675,6 +680,12 @@ class Model( L.LightningModule ):
                     ),
                 operation_name = operation_name,
                 mode = mode,
+                )
+            
+            output_dict = self._handle_operation_output(
+                x = metric_dict,
+                output_dict = output_dict,
+                operation_name = operation_name,
                 )
             
             
