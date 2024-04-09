@@ -705,7 +705,9 @@ class Model( L.LightningModule ):
                     mode = mode,
                     )
             
-            detached_loss_dict = { k: v.detach() for k, v in loss.items() }
+            detached_loss_dict = {}
+            if loss is not None:
+                detached_loss_dict = { k: v.detach() for k, v in loss.items() }
                 
             output_dict = self._handle_operation_output(
                 x = shared_dict(
