@@ -93,6 +93,7 @@ class HypaAssessment( torch.nn.Module ):
                     ],
                 ],
             harmonize_inputs: List[ str ],
+            mismatch_threshold: Optional[int] = None,
             masking: Optional[Dict] = None,
             weight = 1.0,
             apply: Optional[List[str]] = None,
@@ -110,7 +111,7 @@ class HypaAssessment( torch.nn.Module ):
                 )
         else:
             self.assessment = assessment
-        self.harmonize_lengths =  LengthHarmonizer()
+        self.harmonize_lengths =  LengthHarmonizer(mismatch_treshold=mismatch_threshold)
         return
 
     def forward(
