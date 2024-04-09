@@ -416,6 +416,55 @@ class Model( L.LightningModule ):
                         )
 
         return output_dict
+    
+
+    def get_optimizers(self) -> dict:
+        """ Repack the optimizers into a dictionary with the operation names as keys. """
+
+        opts = self.optimizers()
+        if not isinstance( opts, list ):
+            opts = [ opts ]
+
+        return { op: opt for op, opt in zip( self.operations.keys(), opts )}
+
+
+    def get_lr_schedulers(self) -> dict:
+        """ lr_schedulers() alternative method from LightningModule to return the full config, not just the scheduler. """
+
+        if not self.trainer.lr_scheduler_configs:
+            return None
+
+        return { op: config for op, config in zip( self.operations.keys(), self.trainer.lr_scheduler_configs ) }
+    
+
+    def lr_scheduler_step(self,
+                          lr_scheduler_config,
+                          ):
+        
+        if lr_scheduler_config is None:
+            return
+        
+        if lr_scheduler_config.monitor is not None:
+            raise NotImplementedError(
+                f"""
+                Scheduling currently does not work with monitored metrics.
+                @TODO: Implement this feature.
+                """
+                )
+
+        # Note: if not specified, interval defaults to 'epoch' and frequency defaults to 1.
+        if lr_scheduler_config.interval == 'step':
+            if self.global_step % lr_scheduler_config.frequency == 0:
+                lr_scheduler_config.scheduler.step()
+        elif lr_scheduler_config.interval == 'epoch':
+            if self.trainer.is_last_batch:
+                if (self.current_epoch + 1) % lr_scheduler_config.frequency == 0:
+                    lr_scheduler_config.scheduler.step()
+        else:
+            raise ValueError(f"Invalid interval {lr_scheduler_config.interval} for lr_scheduler_config.")
+        
+        return
+    
 
     def training_step(self, batch, batch_idx):
 
@@ -424,14 +473,10 @@ class Model( L.LightningModule ):
         input_dict = batch
         output_dict = {}
 
-        opts = self.optimizers()
+        opts = self.get_optimizers()
+        scheds = self.get_lr_schedulers()
 
-        # check if opts is iterable, if not, make it iterable
-        if not isinstance( opts, list ):
-            opts = [ opts ]
-
-        for operation_idx, _ in enumerate( self.operations ):
-            operation_name = list( self.operations.keys() )[ operation_idx ]
+        for operation_name in self.operations.keys():
 
             # Forward Pass
             operation_out, loss = self._forward_pass(
@@ -449,10 +494,9 @@ class Model( L.LightningModule ):
                 operation_name = operation_name,
                 )
 
-            # Backward Pass if self.losses is not empty list
-            opt = opts[ operation_idx ]
+            # Backward Pass if operation has a loss.
+            opt = opts[ operation_name ]
             if self.losses[ operation_name ]:
-                #opt = opts[ operation_idx ]
                 self._backward_pass(
                     opt = opt,
                     loss = loss,
@@ -460,6 +504,9 @@ class Model( L.LightningModule ):
                     )
             else:
                 opt.step()
+
+            if scheds is not None:
+                self.lr_scheduler_step( scheds[ operation_name ] )
             
             self._handle_assessments(
                 assessments = self.metrics,
@@ -480,8 +527,7 @@ class Model( L.LightningModule ):
         input_dict = batch
         output_dict = {}
 
-        for operation_idx, _ in enumerate( self.operations ):
-            operation_name = list( self.operations.keys() )[ operation_idx ]
+        for operation_name in self.operations.keys():
             # Forward Pass
             with torch.no_grad():
                 operation_out, loss = self._forward_pass(
@@ -647,8 +693,7 @@ class Model( L.LightningModule ):
         input_dict = batch
         output_dict = {}
 
-        for operation_idx, _ in enumerate( self.operations ):
-            operation_name = list( self.operations.keys() )[ operation_idx ]
+        for operation_name in self.operations.keys():
             # Forward Pass
             with torch.no_grad():
                 operation_out, loss = self._forward_pass(
