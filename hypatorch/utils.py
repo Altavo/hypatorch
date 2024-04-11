@@ -209,10 +209,10 @@ def create_mask_same_shape( x, x_length ):
 class LengthHarmonizer( torch.nn.Module ):
     def __init__(
             self,
-            mismatch_treshold = 5,
+            mismatch_threshold = 5,
             ):
         super().__init__()
-        self.mismatch_treshold = mismatch_treshold
+        self.mismatch_threshold = mismatch_threshold
         return
     
     def forward(
@@ -224,12 +224,12 @@ class LengthHarmonizer( torch.nn.Module ):
         lengths = [ x.shape[-1] for x in data ]
 
         # check if lengths differ by a threshold, if so raise error
-        if self.mismatch_treshold is not None:
-            if max( lengths ) - min( lengths ) > self.mismatch_treshold:
+        if self.mismatch_threshold is not None:
+            if max( lengths ) - min( lengths ) > self.mismatch_threshold:
                 raise ValueError(
                     f"""
                     losses.LengthHarmonizer: lengths are {lengths}.
-                    Lengths differ by more than {self.mismatch_treshold} samples.
+                    Lengths differ by more than {self.mismatch_threshold} samples.
                     A bug is likely.
                     """
                     )
