@@ -96,7 +96,7 @@ class HypaAssessment( torch.nn.Module ):
             masking: Optional[Dict] = None,
             weight = 1.0,
             apply: Optional[List[str]] = None,
-            harmonizer_kwargs: Optional[Dict] = None,
+            harmonizer_kwargs: Dict = {},
             ):
         super().__init__()
         self.apply = apply
