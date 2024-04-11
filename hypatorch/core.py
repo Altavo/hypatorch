@@ -688,7 +688,7 @@ class Model( L.LightningModule ):
         return output_dict
     
     def predict_step(self, batch, batch_idx):
-        data_dict = self.predict_step(
+        data_dict = self.test_step(
             batch = batch,
             batch_idx = batch_idx,
             mode = 'predict',
