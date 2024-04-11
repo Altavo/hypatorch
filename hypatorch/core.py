@@ -653,16 +653,17 @@ class Model( L.LightningModule ):
                 assessments = assessments[ operation_name ],
                 mode = mode,
                 )
-            for k, v in assessments_dict.items():
-                self.log(
-                    f'{mode}_{k}',
-                    v,
-                    on_epoch=True,
-                    on_step=True,
-                    prog_bar=True,
-                    logger=True,
-                    #sync_dist=False, #TODO: check if this is necessary
-                )
+            if mode != 'predict':
+                for k, v in assessments_dict.items():
+                    self.log(
+                        f'{mode}_{k}',
+                        v,
+                        on_epoch=True,
+                        on_step=True,
+                        prog_bar=True,
+                        logger=True,
+                        #sync_dist=False, #TODO: check if this is necessary
+                    )
         else:
             assessments_dict = None
         return assessments_dict
@@ -685,10 +686,21 @@ class Model( L.LightningModule ):
                 """
                 )
         return output_dict
-
+    
     def predict_step(self, batch, batch_idx):
+        data_dict = self.test_step(
+            batch = batch,
+            batch_idx = batch_idx,
+            mode = 'predict',
+            )
+        return data_dict
 
-        mode = 'test'
+    def test_step(
+            self,
+            batch,
+            batch_idx,
+            mode = 'test',
+            ):
 
         input_dict = batch
         output_dict = {}
