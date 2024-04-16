@@ -44,8 +44,17 @@ def get_output_variable_names(func):
             """
             )
     
+    # Remove leading and trailing "(" and ")"
+    return_part = return_part.strip("()")
+    # Remove new line chars
+    return_part = return_part.replace("\n", "")
+    # Remove all whitespaces
+    return_part = return_part.replace(" ", "")
+    # Remove trailing commas
+    return_part = return_part.rstrip(",")
     # Split by commas and clean up the code
     returned_variables = return_part.split(",")
+
     returned_variables = [var.strip() for var in returned_variables]
     
     return returned_variables
