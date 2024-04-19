@@ -741,11 +741,12 @@ class Model( L.LightningModule ):
                 mode = mode,
                 )
             
-            output_dict = self._handle_operation_output(
-                x = metric_dict,
-                output_dict = output_dict,
-                operation_name = operation_name,
-                )
+            if metric_dict:
+                output_dict = self._handle_operation_output(
+                    x = metric_dict,
+                    output_dict = output_dict,
+                    operation_name = operation_name,
+                    )
             
             
         data_dict = shared_dict(
