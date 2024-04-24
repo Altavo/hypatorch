@@ -202,7 +202,7 @@ class Model( L.LightningModule ):
             if key in op:
                 x[ op_name ] = op[ key ]
             else:
-                x = return_on_failure
+                x[ op_name ] = return_on_failure
         return x
     
     def _collect_trainable_parameters(
