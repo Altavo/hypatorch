@@ -71,9 +71,9 @@ class MaskedAssessment(torch.nn.Module):
         sum_assessment = self._assessment( **inputs )
                 
         if self.reduction == 'mean':
-            # multiply all elements of x.shape[:-1]
+            # multiply all elements that are not batch or time dimension
             normalize = 1
-            for i in inputs[ apply[0] ].shape[:-1]:
+            for i in inputs[ apply[0] ].shape[1:-1]:
                 normalize *= i
 
             return sum_assessment / (normalize * mask.flatten().sum())
