@@ -31,6 +31,7 @@ class Model( L.LightningModule ):
             operations: List[ List[ Dict[ str, Dict ] ] ],
 
             # training related
+            submodules_eval: Optional[ List[str] ] = None,
             exclude_from_checkpoint: Optional[ List[str] ] = None,
             accumulate_grad_batches: Optional[ int ] = None,
             gradient_clip_val: Optional[ float ] = 5.0,
@@ -118,6 +119,11 @@ class Model( L.LightningModule ):
         if exclude_from_checkpoint is None:
             exclude_from_checkpoint = []
         self.exclude_from_checkpoint = exclude_from_checkpoint
+
+        # List for submodules that require eval mode in training
+        if submodules_eval is None:
+            submodules_eval = []
+        self.submodules_eval = submodules_eval
 
         # Important: This property activates manual optimization.
         self.automatic_optimization = False
@@ -475,6 +481,10 @@ class Model( L.LightningModule ):
 
         opts = self.get_optimizers()
         scheds = self.get_lr_schedulers()
+
+        for submodule_name in self.submodules_eval:
+            submodule = getattr(self, submodule_name)
+            submodule.eval()
 
         for operation_name in self.operations.keys():
 
