@@ -1,6 +1,5 @@
 import os
 import torch
-import lightning as L
 from contextlib import nullcontext
 from omegaconf import DictConfig, ListConfig
 from hydra import compose, initialize
@@ -19,8 +18,41 @@ from .utils import validate_io_keys
 from .utils import get_module_input
 
 
+class Scheduler:
 
-class Model( L.LightningModule ):
+    def __init__(
+            self,
+            scheduler,
+            frequency=1,
+            interval='epoch'
+            ):
+        self.scheduler = scheduler
+        self.frequency = frequency
+        self.interval = interval
+
+        self.steps_since_update = 0
+        self.epochs_since_update = 0
+
+    def step_done(self):
+        if self.interval != 'step':
+            return
+        
+        self.steps_since_update += 1
+        if self.steps_since_update >= self.frequency:
+            self.scheduler.step()
+            self.steps_since_update = 0
+
+    def epoch_done(self):
+        if self.interval != 'epoch':
+            return
+        
+        self.epochs_since_update += 1
+        if self.epochs_since_update >= self.frequency:
+            self.scheduler.step()
+            self.epochs_since_update = 0
+
+
+class Model( torch.nn.Module ):
     def __init__(
             self,
             # core functionality
@@ -80,13 +112,6 @@ class Model( L.LightningModule ):
         self.metrics = self._get_content( 'metrics' )
 
 
-        # Lightning does not accept gradient accumulation or clipping
-        # as arguments if optimization is manual. Therefore, we need to
-        # implement these functionalities manually.
-        self.accumulate_grad_batches = accumulate_grad_batches
-        self.gradient_clip_val = gradient_clip_val
-
-
         # Checkpoints
         self.checkpoints = checkpoints if checkpoints is not None else []
 
@@ -124,9 +149,6 @@ class Model( L.LightningModule ):
         if submodules_eval is None:
             submodules_eval = []
         self.submodules_eval = submodules_eval
-
-        # Important: This property activates manual optimization.
-        self.automatic_optimization = False
 
         return
     
@@ -265,35 +287,30 @@ class Model( L.LightningModule ):
         return
     
     def configure_optimizers(self):
-
-        optimizers = []
+        optimizers = {}
+        schedulers = {}
 
         for op_name, opt in self.operations.items():
-            # List of parameters to optimize
+            # List of parameters to optimize for this operation
             parameters = self._collect_trainable_parameters(
                 submodule_names = opt[ 'optimize_submodules' ],
             )
 
             optimizer = opt[ 'optimizer' ](parameters)
 
+            optimizers[op_name] = optimizer
 
-            d = {'optimizer': optimizer}
-            if opt[ 'lr_scheduler' ] is not None:
+            if 'lr_scheduler' in opt and opt[ 'lr_scheduler' ] is not None:
                 # Instantiate the partially instantiated LR scheduler
-                sch = {
-                    'scheduler': opt[ 'lr_scheduler' ]['scheduler'](optimizer),
-                }
+                scheduler = opt[ 'lr_scheduler' ].pop( 'scheduler' )(optimizer)
 
-                # add the other keys to the dict
-                for k, v in opt[ 'lr_scheduler' ].items():
-                    if k != 'scheduler':
-                        sch[k] = v
+                # Wrap the scheduler in the hypatorch scheduler to handle the frequency and interval
+                schedulers[op_name] = Scheduler(
+                    scheduler = scheduler,
+                    **opt[ 'lr_scheduler' ],
+                )
 
-                d['lr_scheduler'] = sch
-            
-            optimizers.append( d )
-
-        return optimizers
+        return optimizers, schedulers
 
     def _run_submodule(
             self,
@@ -377,13 +394,13 @@ class Model( L.LightningModule ):
     def forward(
             self,
             input_dict,
-            mappings,
+            operation_name,
             mode,
             ):
 
         output_dict = {}
 
-        for mapping in mappings:
+        for mapping in self.mappings[ operation_name ]:
             for submodule_name in mapping.keys():
                 submodule = getattr(self, submodule_name)
                 if submodule is not None:
@@ -423,112 +440,6 @@ class Model( L.LightningModule ):
 
         return output_dict
     
-
-    def get_optimizers(self) -> dict:
-        """ Repack the optimizers into a dictionary with the operation names as keys. """
-
-        opts = self.optimizers()
-        if not isinstance( opts, list ):
-            opts = [ opts ]
-
-        return { op: opt for op, opt in zip( self.operations.keys(), opts )}
-
-
-    def get_lr_schedulers(self) -> dict:
-        """ lr_schedulers() alternative method from LightningModule to return the full config, not just the scheduler. """
-
-        if not self.trainer.lr_scheduler_configs:
-            return None
-
-        return { op: config for op, config in zip( self.operations.keys(), self.trainer.lr_scheduler_configs ) }
-    
-
-    def lr_scheduler_step(self,
-                          lr_scheduler_config,
-                          ):
-        
-        if lr_scheduler_config is None:
-            return
-        
-        if lr_scheduler_config.monitor is not None:
-            raise NotImplementedError(
-                f"""
-                Scheduling currently does not work with monitored metrics.
-                @TODO: Implement this feature.
-                """
-                )
-
-        # Note: if not specified, interval defaults to 'epoch' and frequency defaults to 1.
-        if lr_scheduler_config.interval == 'step':
-            if self.global_step % lr_scheduler_config.frequency == 0:
-                lr_scheduler_config.scheduler.step()
-        elif lr_scheduler_config.interval == 'epoch':
-            if self.trainer.is_last_batch:
-                if (self.current_epoch + 1) % lr_scheduler_config.frequency == 0:
-                    lr_scheduler_config.scheduler.step()
-        else:
-            raise ValueError(f"Invalid interval {lr_scheduler_config.interval} for lr_scheduler_config.")
-        
-        return
-    
-
-    def training_step(self, batch, batch_idx):
-
-        mode = 'train'
-        
-        input_dict = batch
-        output_dict = {}
-
-        opts = self.get_optimizers()
-        scheds = self.get_lr_schedulers()
-
-        for submodule_name in self.submodules_eval:
-            submodule = getattr(self, submodule_name)
-            submodule.eval()
-
-        for operation_name in self.operations.keys():
-
-            # Forward Pass
-            operation_out, loss = self._forward_pass(
-                input_dict = shared_dict(
-                    input_dict,
-                    output_dict,
-                    ),
-                operation_name = operation_name,
-                mode = mode,
-                )
-            
-            output_dict = self._handle_operation_output(
-                x = operation_out,
-                output_dict = output_dict,
-                operation_name = operation_name,
-                )
-
-            # Backward Pass if operation has a loss.
-            opt = opts[ operation_name ]
-            if self.losses[ operation_name ]:
-                self._backward_pass(
-                    opt = opt,
-                    loss = loss,
-                    batch_idx = batch_idx,
-                    )
-            else:
-                opt.step()
-
-            if scheds is not None:
-                self.lr_scheduler_step( scheds[ operation_name ] )
-            
-            self._handle_assessments(
-                assessments = self.metrics,
-                data_dict = shared_dict(
-                    input_dict,
-                    output_dict,
-                    ),
-                operation_name = operation_name,
-                mode = mode,
-                )
-
-        return loss
 
     def validation_step(self, batch, batch_idx):
 
@@ -592,70 +503,40 @@ class Model( L.LightningModule ):
         
         return loss
     
-    def _backward_pass(
-            self,
-            opt,
-            loss,
-            batch_idx,
-            ):
-        if self.accumulate_grad_batches is None:
-            opt.zero_grad()
-            self.manual_backward( loss )
-            #Implement gradient clipping
-            self.clip_gradients(
-                opt,
-                gradient_clip_val = self.gradient_clip_val,
-                gradient_clip_algorithm='value',
-                )
-            opt.step()
-        else:
-            N = self.accumulate_grad_batches
-            loss = loss / N
-            self.manual_backward( loss )
-            # accumulate gradients
-            if ( batch_idx + 1 ) % N == 0:
-                #Implement gradient clipping
-                self.clip_gradients(
-                    opt,
-                    gradient_clip_val = self.gradient_clip_val,
-                    gradient_clip_algorithm='value',
-                    )
-                opt.step()
-                opt.zero_grad()
-        return
-    
-    def _forward_pass(
-            self,
-            input_dict,
-            operation_name,
-            mode,
-            ):
-        output_dict = self(
-            input_dict,
-            self.mappings[ operation_name ],
-            mode = mode,
-            )
+    def compute_loss(self, x, operation_name, mode, logger=None):
         loss_dict = self._handle_assessments(
             assessments = self.losses,
-            data_dict = shared_dict(
-                input_dict,
-                output_dict,
-                ),
+            data_dict = x,
             operation_name = operation_name,
             mode = mode,
+            logger = logger,
             )
+
         if loss_dict:
             loss = sum( loss_dict.values() )
         else:
             loss = None
-        return output_dict, loss
-    
+
+
+        return loss
+        
+    def compute_metrics(self, x, operation_name, mode, logger=None):
+        metric_dict = self._handle_assessments(
+            assessments = self.metrics,
+            data_dict = x,
+            operation_name = operation_name,
+            mode = mode,
+            logger = logger,
+            )
+        return metric_dict
+
     def _handle_assessments(
             self,
             assessments,
             data_dict,
             operation_name,
             mode,
+            logger=None
             ):
         if assessments:
             assessments_dict = self._compute_assessments(
@@ -663,16 +544,11 @@ class Model( L.LightningModule ):
                 assessments = assessments[ operation_name ],
                 mode = mode,
                 )
-            if mode != 'predict':
+            if logger:
                 for k, v in assessments_dict.items():
-                    self.log(
+                    logger.log_value(
                         f'{mode}_{k}',
-                        v,
-                        on_epoch=True,
-                        on_step=True,
-                        prog_bar=True,
-                        logger=True,
-                        #sync_dist=False, #TODO: check if this is necessary
+                        v.item(),
                     )
         else:
             assessments_dict = None

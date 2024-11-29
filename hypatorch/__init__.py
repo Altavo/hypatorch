@@ -4,5 +4,7 @@ from hypatorch.losses import MAE_Loss
 from hypatorch.losses import MMAE_Loss
 from hypatorch.losses import MSE_Loss
 from hypatorch.losses import MMSE_Loss
+from hypatorch.train import Trainer
+from hypatorch import logger
 
 __version__ = '0.2.14'

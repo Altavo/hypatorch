@@ -1,0 +1,29 @@
+# This file only holds the default parameters 
+# Model and Datset must be defined in the experiment config
+# See example experiments in conf/experiment folder
+# To run an experiment provide +experiment=<config_name_without_ending>
+# Example: python train.py +experiment=glowtts
+
+defaults:
+  - profiler: passthrough
+  - device: cpu
+  - weights_loader: null
+  - device/${device}@_here_
+  - preprocessor: null
+
+hydra:
+  output_subdir: logs/hydra
+
+seed: 1234
+
+model_checkpoints:
+  train_time_interval: 
+    _target_: datetime.timedelta
+    seconds: 5
+
+trainer:
+  gradient_clip_val: 5.0
+  gradient_clip_algorithm: value
+
+dataloader:
+  batch_size: 32

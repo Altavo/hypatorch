@@ -1,0 +1,25 @@
+train:
+  _target_: hypatorch.dataset.DictedDataset
+  dataset:
+    _target_: torchvision.datasets.MNIST
+    root: data_root
+    train: true
+    download: true
+    transform:
+      _target_: torchvision.transforms.ToTensor
+  sample_keys:
+    - image
+    - class
+
+val:
+  _target_: hypatorch.dataset.DictedDataset
+  dataset:
+    _target_: torchvision.datasets.MNIST
+    root: data_root
+    train: false
+    download: true
+    transform:
+      _target_: torchvision.transforms.ToTensor
+  sample_keys:
+    - image
+    - class

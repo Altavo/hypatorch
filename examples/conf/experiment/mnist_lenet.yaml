@@ -1,0 +1,9 @@
+# @package _global_
+
+defaults:
+  - /model: lenet
+  - /dataset: mnist
+  
+trainer:
+  max_epochs: 5
+  max_samples: 1000000

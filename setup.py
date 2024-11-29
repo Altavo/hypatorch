@@ -3,8 +3,7 @@ from setuptools import setup
 install_requires = [
     'torch',
     'hydra-core',
-    'lightning',
-    'omegaconf',
+    'omegaconf'
     ]
 
 # Get version from the module

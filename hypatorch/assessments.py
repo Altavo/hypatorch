@@ -92,7 +92,7 @@ class HypaAssessment( torch.nn.Module ):
                     Dict[ str, Dict ],
                     ],
                 ],
-            harmonize_inputs: List[ str ],
+            harmonize_inputs: List[ str ] = None,
             masking: Optional[Dict] = None,
             weight = 1.0,
             apply: Optional[List[str]] = None,
