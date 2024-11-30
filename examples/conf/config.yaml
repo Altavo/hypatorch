@@ -5,11 +5,10 @@
 # Example: python train.py +experiment=glowtts
 
 defaults:
-  - profiler: passthrough
   - device: cpu
-  - weights_loader: null
   - device/${device}@_here_
-  - preprocessor: null
+  - logger: console
+
 
 hydra:
   output_subdir: logs/hydra

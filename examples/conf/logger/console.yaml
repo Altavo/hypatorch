@@ -1,0 +1,2 @@
+_target_: hypatorch.logger.ConsoleLogger
+log_every_n_steps: 25

@@ -1,2 +1,0 @@
-_target_: lightning.pytorch.profilers.AdvancedProfiler
-filename: advanced_profiler_results
