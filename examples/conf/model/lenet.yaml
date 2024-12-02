@@ -13,6 +13,11 @@ operations:
       _target_: torch.optim.Adam
       lr: 0.02
   
+    gradient_clipping:
+      _partial_: true
+      _target_: torch.nn.utils.clip_grad_value_
+      clip_value: 1.0
+
     optimize_submodules:
       - image_encoder
 

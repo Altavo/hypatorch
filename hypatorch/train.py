@@ -13,7 +13,6 @@ class Trainer:
                  float32_matmul_precision='high',
                  compile_model=False,
                  autocast_dtype=None,
-                 gradient_clip_val=None,
                  grad_accum_steps=1,
                  **kwargs):
 
@@ -33,7 +32,6 @@ class Trainer:
         self.logger = logger
 
         # Optimizer setup
-        self.gradient_clip_val = gradient_clip_val
         self.grad_accum_steps = grad_accum_steps
 
 
@@ -59,14 +57,6 @@ class Trainer:
 
         return input_dict
 
-    def _clip_gradients(self, optimizer):        
-        norm = None
-
-        if self.gradient_clip_val is not None:
-            norm = torch.nn.utils.clip_grad_norm_(optimizer.param_groups[0]['params'], self.gradient_clip_val)
-
-        return norm
-
     def _is_optimizer_step_complete(self, epoch_step):
         return (epoch_step + 1) % self.grad_accum_steps == 0
 
@@ -77,7 +67,7 @@ class Trainer:
         else:
             return nullcontext()
 
-    def step(self, mode, model, step, input_dict, optimizers=None, schedulers=None, logger=None):
+    def step(self, mode, model, step, input_dict, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
 
         operations = model.operations.keys()
 
@@ -124,8 +114,8 @@ class Trainer:
                 opt = optimizers[ operation_name ]                    
 
                 # Gradient Clipping
-                if self.gradient_clip_val is not None:
-                    self._clip_gradients(opt)
+                if gradient_clipping and operation_name in gradient_clipping:
+                    gradient_clipping[ operation_name ]()
 
                 # Update the parameters via optimizer using the gradients
                 opt.step()
@@ -150,7 +140,7 @@ class Trainer:
         return output_dict, metrics
 
 
-    def epoch(self, mode, model, epoch, dataset, optimizers=None, schedulers=None, logger=None):
+    def epoch(self, mode, model, epoch, dataset, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
         operations = model.operations.keys()
 
         # Zero all gradients
@@ -162,7 +152,7 @@ class Trainer:
             logger.log_value(f'{mode}_epoch', epoch)
         
         for epoch_step, input_dict in enumerate(dataset):           
-            self.step(mode=mode, model=model, step=epoch_step, input_dict=input_dict, optimizers=optimizers, schedulers=schedulers, logger=logger)
+            self.step(mode=mode, model=model, step=epoch_step, input_dict=input_dict, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)
 
         # End of epoch
         for operation_name in operations:
@@ -185,13 +175,13 @@ class Trainer:
         if self.compile_model:            
             model = torch.compile(model)
 
-        optimizers, schedulers = model.configure_optimizers()
+        optimizers, schedulers, gradient_clipping = model.configure_optimizers()
 
         # Train Loop
         for epoch_idx in range(max_epochs):
             model.train()
             train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, **loader_args)
-            self.epoch(mode='train', model=model, epoch=epoch_idx, dataset=train_loader, optimizers=optimizers, schedulers=schedulers, logger=logger)
+            self.epoch(mode='train', model=model, epoch=epoch_idx, dataset=train_loader, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)
 
             if val_dataset:
                 model.eval()

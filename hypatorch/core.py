@@ -65,8 +65,6 @@ class Model( torch.nn.Module ):
             # training related
             submodules_eval: Optional[ List[str] ] = None,
             exclude_from_checkpoint: Optional[ List[str] ] = None,
-            accumulate_grad_batches: Optional[ int ] = None,
-            gradient_clip_val: Optional[ float ] = 5.0,
             checkpoints: Optional[ List[ Dict[ str, str ] ] ] = None,
             ):
         
@@ -290,6 +288,8 @@ class Model( torch.nn.Module ):
         optimizers = {}
         schedulers = {}
 
+        gradient_clipping = {}
+
         for op_name, opt in self.operations.items():
             # List of parameters to optimize for this operation
             parameters = self._collect_trainable_parameters(
@@ -310,7 +310,12 @@ class Model( torch.nn.Module ):
                     **opt[ 'lr_scheduler' ],
                 )
 
-        return optimizers, schedulers
+            if 'gradient_clipping' in opt and opt[ 'gradient_clipping' ] is not None:
+                def gradient_clipping_fn(opt, parameters):
+                    return lambda: opt['gradient_clipping'](parameters)
+                gradient_clipping[op_name] = gradient_clipping_fn(opt, parameters)
+
+        return optimizers, schedulers, gradient_clipping
 
     def _run_submodule(
             self,
