@@ -5,7 +5,7 @@ import hypatorch
 
 
 if __name__ == "__main__":
-    rel_config_dir = os.path.relpath(os.path.dirname(__file__), os.getcwd())
+    rel_config_dir = os.path.relpath(os.path.dirname(__file__) or os.getcwd(), os.getcwd())
     with initialize(
         config_path=os.path.join(rel_config_dir, "conf"), version_base="1.1"
     ):
