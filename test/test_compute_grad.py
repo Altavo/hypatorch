@@ -31,7 +31,7 @@ class TestComputeGrad(unittest.TestCase):
         ):
             self.cfg = compose(config_name="config.yaml", overrides=['+experiment=mnist_lenet'])
 
-    def test_compute_grad(self):
+    def test_modes(self):
         with add_path(self.training_path):
             model = instantiate(self.cfg.model)
 
@@ -60,3 +60,37 @@ class TestComputeGrad(unittest.TestCase):
             assert(predict_output.keys() == {'logits'})
             assert(not predict_output['logits'].requires_grad)
 
+
+    def test_no_optimized_submodules(self):
+        with add_path(self.training_path):
+            # Modify the config to not optimize any submodules
+            self.cfg.model.operations.update_encoder.optimize_submodules = []
+
+            model = instantiate(self.cfg.model)
+
+            batch = {
+                'image': torch.randn(32, 1, 28, 28),
+                'label': torch.randint(0, 10, (32,))                
+            }
+
+            train_output = model(batch, 'update_encoder', 'train')
+
+            assert(train_output.keys() == {'logits'})
+            assert(not train_output['logits'].requires_grad)
+
+    def test_calculate_grad_false(self):
+        with add_path(self.training_path):
+            # Modify the config to not calculate gradients
+            self.cfg.model.operations.update_encoder.mappings[0].image_encoder.calculate_grad = False
+
+            model = instantiate(self.cfg.model)
+
+            batch = {
+                'image': torch.randn(32, 1, 28, 28),
+                'label': torch.randint(0, 10, (32,))                
+            }
+
+            train_output = model(batch, 'update_encoder', 'train')
+
+            assert(train_output.keys() == {'logits'})
+            assert(not train_output['logits'].requires_grad)
