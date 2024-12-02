@@ -163,4 +163,4 @@ cython_debug/
 #.idea/
 
 examples/outputs**
-examples/data_root**
+**data_root**

@@ -1,5 +1,5 @@
 import torch
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 
 from .core import Model
 from .utils import shared_dict, update_output
@@ -42,12 +42,17 @@ class Trainer:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)
 
-    def _autocast_context(self):
+    def _forward_context(self, mode):
+        forward_context = ExitStack()
+
         if self.autocast_dtype is not None:
-            return torch.autocast(device_type=self.device, dtype=self.autocast_dtype)
-        else:
-            # null context manager
-            return nullcontext()
+            forward_context.enter_context(torch.autocast(device_type=self.device, dtype=self.autocast_dtype))
+
+        if mode != 'train':
+            forward_context.enter_context(torch.no_grad())
+
+        return forward_context
+        
 
     def _input_to_device(self, input_dict):
         # Move input_dict to device
@@ -87,7 +92,7 @@ class Trainer:
 
         for operation_name in operations:
 
-            with self._autocast_context():
+            with self._forward_context(mode):
                 # Forward Pass
                 operation_output = model(
                     input_dict = shared_dict(input_dict, output_dict),

@@ -318,11 +318,12 @@ class Model( torch.nn.Module ):
             submodule_name,
             mapping,
             data_dict,
+            mode
             ):
         
         frozen = submodule_name in self.frozen
         calculate_grad = mapping[ submodule_name ][ 'calculate_grad' ]
-        if not calculate_grad or ( frozen and not calculate_grad ):
+        if not calculate_grad or ( frozen and not calculate_grad ) or mode != 'train':
             context = torch.no_grad()
         else:
             context = nullcontext()
@@ -418,6 +419,7 @@ class Model( torch.nn.Module ):
                             submodule_name = submodule_name,
                             mapping = mapping,
                             data_dict = data_dict,
+                            mode=mode,
                         )
                         # check that x.keys do not overlap with output_dict.keys
                         if not any( x in output_dict.keys() for x in x.keys() ):
