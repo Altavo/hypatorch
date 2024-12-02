@@ -48,9 +48,6 @@ class Trainer:
         if self.autocast_dtype is not None:
             forward_context.enter_context(torch.autocast(device_type=self.device, dtype=self.autocast_dtype))
 
-        if mode != 'train':
-            forward_context.enter_context(torch.no_grad())
-
         return forward_context
         
 
@@ -126,6 +123,11 @@ class Trainer:
             if optimizers and self._is_optimizer_step_complete(step):
                 opt = optimizers[ operation_name ]                    
 
+                # Gradient Clipping
+                if self.gradient_clip_val is not None:
+                    self._clip_gradients(opt)
+
+                # Update the parameters via optimizer using the gradients
                 opt.step()
 
                 if operation_name in schedulers:
@@ -178,13 +180,6 @@ class Trainer:
         self._reset_random_seed()        
         torch.set_float32_matmul_precision(self.float32_matmul_precision)
 
-        # Put submodules in correct mode
-        for submodule_name in model.submodule_names:
-            if submodule_name in model.submodules_eval:
-                getattr(model, submodule_name).eval()
-            else:
-                getattr(model, submodule_name).train()
-
         # Move model to device & compile if needed
         model.to(self.device)       
         if self.compile_model:            
@@ -194,9 +189,11 @@ class Trainer:
 
         # Train Loop
         for epoch_idx in range(max_epochs):
+            model.train()
             train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, **loader_args)
             self.epoch(mode='train', model=model, epoch=epoch_idx, dataset=train_loader, optimizers=optimizers, schedulers=schedulers, logger=logger)
 
             if val_dataset:
+                model.eval()
                 val_loader = torch.utils.data.DataLoader(val_dataset, shuffle=False, **loader_args)
                 self.epoch(mode='val', model=model, epoch=epoch_idx, dataset=val_loader, logger=logger)

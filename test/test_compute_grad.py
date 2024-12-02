@@ -7,18 +7,7 @@ from hydra.utils import instantiate
 
 import hypatorch
 
-class add_path():
-    def __init__(self, path):
-        self.path = path
-
-    def __enter__(self):
-        sys.path.insert(0, self.path)
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            sys.path.remove(self.path)
-        except ValueError:
-            pass
+from shared import add_path
 
 class TestComputeGrad(unittest.TestCase):
 
@@ -34,6 +23,7 @@ class TestComputeGrad(unittest.TestCase):
     def test_modes(self):
         with add_path(self.training_path):
             model = instantiate(self.cfg.model)
+            model.train()
 
             batch = {
                 'image': torch.randn(32, 1, 28, 28),
@@ -67,6 +57,7 @@ class TestComputeGrad(unittest.TestCase):
             self.cfg.model.operations.update_encoder.optimize_submodules = []
 
             model = instantiate(self.cfg.model)
+            model.train()
 
             batch = {
                 'image': torch.randn(32, 1, 28, 28),
@@ -84,6 +75,7 @@ class TestComputeGrad(unittest.TestCase):
             self.cfg.model.operations.update_encoder.mappings[0].image_encoder.calculate_grad = False
 
             model = instantiate(self.cfg.model)
+            model.train()
 
             batch = {
                 'image': torch.randn(32, 1, 28, 28),

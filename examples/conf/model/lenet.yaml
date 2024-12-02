@@ -3,6 +3,9 @@ _target_: hypatorch.Model
 defaults:
   - /submodules/image_encoder: linear
 
+submodules_eval:
+
+
 operations:
   update_encoder:
     optimizer:

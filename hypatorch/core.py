@@ -442,6 +442,12 @@ class Model( torch.nn.Module ):
 
         return output_dict
     
+    def train(self, mode=True):
+        for submodule_name in self.submodule_names:
+            if not mode or submodule_name in self.submodules_eval:
+                getattr(self, submodule_name).eval()
+            else:
+                getattr(self, submodule_name).train()
 
     def validation_step(self, batch, batch_idx):
 
