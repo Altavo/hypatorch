@@ -20,12 +20,19 @@ class TestTrainMode(unittest.TestCase):
         ):
             self.cfg = compose(config_name="config.yaml", overrides=['+experiment=mnist_lenet'])
 
-    def test_default(self):
+    def test_train(self):
         with add_path(self.training_path):
             model = instantiate(self.cfg.model)
             model.train()   
 
             assert(model.image_encoder.training)
+
+    def test_eval(self):
+        with add_path(self.training_path):
+            model = instantiate(self.cfg.model)
+            model.eval()
+
+            assert(not model.image_encoder.training)
 
     def test_submodule_eval(self):
         with add_path(self.training_path):
