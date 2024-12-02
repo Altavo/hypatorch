@@ -94,13 +94,13 @@ class ConsoleLogger(DataLogger):
     def report_step(self):
         # Create a string with | separated key value pairs
         log_str = " | ".join([f"{k}={self._format(v)}" for k, v in self.step_items()])
-        print("step: " + log_str)
+        print("step > " + log_str)
 
 
     def report_epoch(self):
         # Create a string with | separated key value pairs
         log_str = " | ".join([f"{k}={self._format(v)}" for k, v in self.epoch_items()])
-        print("epoch: " + log_str)
+        print("epoch > " + log_str)
 
 
 
