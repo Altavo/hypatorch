@@ -1,0 +1,2 @@
+_target_: modules.upsample.Bilinear
+size: [32,32]

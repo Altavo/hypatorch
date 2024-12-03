@@ -6,6 +6,7 @@ from .utils import shared_dict, update_output
 
 class Trainer:
     def __init__(self,
+                 max_epochs,
                  device = None, 
                  log_every_n_steps = 25, 
                  logger=None,
@@ -38,6 +39,14 @@ class Trainer:
         self.global_step = 0
         self.train_step = 0
         self.val_step = 0
+
+        # Termination
+        self.max_epochs = max_epochs
+
+    def _reset_steps(self):
+        self.global_step = 0
+        self.train_step = 0
+        self.val_step = 0   
 
     def _reset_random_seed(self):
         torch.manual_seed(self.seed)        
@@ -188,20 +197,23 @@ class Trainer:
 
 
 
-    def train(self, model: Model, train_dataset, loader_args, max_epochs, val_dataset=None, logger=None):
+    def train(self, model: Model, train_dataset, loader_args, val_dataset=None, logger=None):
         # General Setup and Random Seed Initialization
         self._reset_random_seed()        
         torch.set_float32_matmul_precision(self.float32_matmul_precision)
 
+        self._reset_steps()
+
         # Move model to device & compile if needed
         model.to(self.device)       
-        if self.compile_model:            
+        if self.compile_model:
+            print("Compiling Model")      
             model = torch.compile(model)
 
         optimizers, schedulers, gradient_clipping = model.configure_optimizers()
 
         # Train Loop
-        for epoch_idx in range(max_epochs):
+        for epoch_idx in range(self.max_epochs):
             model.train()
             train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, **loader_args)
             self.epoch(mode='train', model=model, epoch=epoch_idx, dataset=train_loader, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)

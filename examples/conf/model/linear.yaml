@@ -1,8 +1,7 @@
 _target_: hypatorch.Model
 
 defaults:
-  - /submodules/image_encoder: lenet
-  - /submodules/resize: bilinear
+  - /submodules/image_encoder: linear
 
 submodules_eval:
 
@@ -12,24 +11,22 @@ operations:
     optimizer:
       _partial_: true
       _target_: torch.optim.Adam
-      lr: 0.01
+      lr: 0.02
   
+    gradient_clipping:
+      _partial_: true
+      _target_: torch.nn.utils.clip_grad_value_
+      clip_value: 1.0
+
     optimize_submodules:
       - image_encoder
 
     mappings:
-      - resize:
+      - image_encoder:
           inputs: 
             x: image
           outputs:
-            x: scaled_image
-          calculate_grad: false
-
-      - image_encoder:
-          inputs: 
-            x: scaled_image
-          outputs:
-            output: logits
+            x: logits
           calculate_grad: true
     
     losses:
