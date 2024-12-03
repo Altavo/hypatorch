@@ -34,6 +34,10 @@ class Trainer:
         # Optimizer setup
         self.grad_accum_steps = grad_accum_steps
 
+        # Step
+        self.global_step = 0
+        self.train_step = 0
+        self.val_step = 0
 
     def _reset_random_seed(self):
         torch.manual_seed(self.seed)        
@@ -67,17 +71,32 @@ class Trainer:
         else:
             return nullcontext()
 
-    def step(self, mode, model, step, input_dict, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
+    def _next_step(self, mode):
+        current_step = self.train_step if mode == 'train' else self.val_step
+        current_global_step = self.global_step
 
-        operations = model.operations.keys()
+        if mode == 'train':
+            self.train_step += 1
+        else:
+            self.val_step += 1
 
-        input_dict = self._input_to_device(input_dict)
-        output_dict = {}
+        self.global_step += 1
+
+        return current_step, current_global_step
+
+    def step(self, mode, model, input_dict, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
+
+        step, global_step = self._next_step(mode)
 
         if logger:
             logger.log_value(f'{mode}_step', step)
 
-        for operation_name in operations:
+        # Move input_dict to device
+        input_dict = self._input_to_device(input_dict)  
+        output_dict = {}
+
+        # Iterate over all operations
+        for operation_name in model.operations.keys():
 
             with self._forward_context(mode):
                 # Forward Pass
@@ -137,7 +156,7 @@ class Trainer:
         if logger:
             logger.step_done()
 
-        return output_dict, metrics
+        return output_dict, metrics, step, global_step
 
 
     def epoch(self, mode, model, epoch, dataset, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
@@ -152,7 +171,11 @@ class Trainer:
             logger.log_value(f'{mode}_epoch', epoch)
         
         for epoch_step, input_dict in enumerate(dataset):           
-            self.step(mode=mode, model=model, step=epoch_step, input_dict=input_dict, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)
+            output_dict, metrics, step, global_step = self.step(mode=mode, model=model, input_dict=input_dict, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)
+
+            # On the first step in validation log the data
+            if logger and epoch_step == 0 and mode == 'val':
+                model.log_data(data_dict=shared_dict(input_dict, output_dict), step=global_step, logger=logger)
 
         # End of epoch
         for operation_name in operations:

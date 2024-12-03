@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import torch
 
 class DataLogger(ABC):
 
@@ -15,6 +16,9 @@ class DataLogger(ABC):
 
     def log_value(self, name:str, value:float|int):
         self._step_log[name] = value
+
+    def log_images(self, name:str, input_dict: dict, image_keys: list[str]):
+        pass
 
     @abstractmethod
     def report_step(self):

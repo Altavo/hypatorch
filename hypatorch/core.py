@@ -454,6 +454,31 @@ class Model( torch.nn.Module ):
             else:
                 getattr(self, submodule_name).train()
 
+    
+    def log_data(self, logger, step, data_dict):
+
+        for operation_name in self.operations.keys():
+            if self.logging:
+                loggings = self.logging[ operation_name ]
+                if loggings:
+                    if not isinstance( loggings, list ) and not isinstance( loggings, ListConfig ):
+                        loggings = [ loggings ]
+                    
+                    for log in loggings:
+
+                        fn_name = log[ 'fn' ]
+                        fn_args = { k: v for k, v in log.items() if k != 'fn' }
+
+                        log_fn = getattr(
+                            logger,
+                            fn_name,
+                        )
+                        log_fn(
+                            data_dict = data_dict,
+                            global_step = step,
+                            **fn_args,
+                            )        
+
     def validation_step(self, batch, batch_idx):
 
         mode = 'val'
