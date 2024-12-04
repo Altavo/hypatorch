@@ -9,6 +9,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="lenet")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--compile_model", action="store_true")
+    parser.add_argument("--autocast_dtype", type=str, default=None)
     args = parser.parse_args()
 
     rel_config_dir = os.path.relpath(os.path.dirname(__file__) or os.getcwd(), os.getcwd())
@@ -18,6 +19,8 @@ if __name__ == "__main__":
         overrides = ["+experiment=mnist", f"+model={args.model}", f"device={args.device}"]
         if args.compile_model:
             overrides.append("+trainer.compile_model=True")
+        if args.autocast_dtype:
+            overrides.append(f"+trainer.autocast_dtype={args.autocast_dtype}")
 
         cfg = compose(config_name="config.yaml", overrides=overrides)
 

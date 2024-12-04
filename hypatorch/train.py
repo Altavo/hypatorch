@@ -26,6 +26,8 @@ class Trainer:
         self.float32_matmul_precision = float32_matmul_precision
         self.seed = seed
         self.autocast_dtype = autocast_dtype
+        if isinstance(self.autocast_dtype, str):
+            self.autocast_dtype = getattr(torch, self.autocast_dtype)
         self.compile_model = compile_model
 
         # Logging setup

@@ -1,6 +1,7 @@
 dataloader:
-  num_workers: 8
+  num_workers: 4
 
 trainer:
   device: mps
+  autocast_precision: fp16
   
