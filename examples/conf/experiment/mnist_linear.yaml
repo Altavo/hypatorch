@@ -5,5 +5,4 @@ defaults:
   - /dataset: mnist
   
 trainer:
-  max_epochs: 5
-  max_samples: 1000000
+  max_epochs: 2

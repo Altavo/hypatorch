@@ -42,19 +42,38 @@ class Trainer:
         self.global_step = 0
         self.train_step = 0
         self.val_step = 0
+        self.epoch_idx = 0
 
         # Termination
         self.max_epochs = max_epochs
+
+        self.optimizers = None
+        self.schedulers = None
+        self.gradient_clipping = None
 
     def _reset_steps(self):
         self.global_step = 0
         self.train_step = 0
         self.val_step = 0   
+        self.epoch_idx = 0
 
     def _reset_random_seed(self):
         torch.manual_seed(self.seed)        
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(self.seed)
+
+    def get_rng_state_dict(self):
+        rng_state_dict = {
+            'torch_rng_state': torch.get_rng_state(),
+        }
+        if torch.cuda.is_available():
+            rng_state_dict['torch_cuda_rng_state'] = torch.cuda.get_rng_state_all()
+        return rng_state_dict
+    
+    def set_rng_state_dict(self, rng_state_dict):
+        torch.set_rng_state(rng_state_dict['torch_rng_state'])
+        if torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(rng_state_dict['torch_cuda_rng_state'])
 
     def _forward_context(self, mode):
         forward_context = ExitStack()
@@ -96,37 +115,55 @@ class Trainer:
 
         return current_step, current_global_step
 
-    def save_checkpoint(self, name, model, optimizers, schedulers, chkpt_dir=None):
+    def save_checkpoint(self, name, model, optimizers=None, schedulers=None, chkpt_dir=None):
         from . import __version__
 
         checkpoint = {}
         checkpoint['hypatorch_version'] = __version__
         checkpoint['state_dict'] = model.state_dict()
-        checkpoint['optimizers'] = {k: v.state_dict() for k, v in optimizers.items()}
-        checkpoint['lr_schedulers'] = {k: v.state_dict() for k, v in schedulers.items()}
+        if optimizers:
+            checkpoint['optimizers'] = {k: v.state_dict() for k, v in optimizers.items()}
+        if schedulers:
+            checkpoint['lr_schedulers'] = {k: v.state_dict() for k, v in schedulers.items()}            
         checkpoint['global_step'] = self.global_step
         checkpoint['train_step'] = self.train_step
         checkpoint['val_step'] = self.val_step
+        checkpoint['epoch_idx'] = self.epoch_idx
+        checkpoint['rng_state'] = self.get_rng_state_dict()
 
         # Save to output directory
         if chkpt_dir:
             name = os.path.join(chkpt_dir, name)
         torch.save(checkpoint, name)
 
-    def load_checkpoint(self, name, model, optimizers, schedulers, chkpt_dir=None, strict=True):
+    def load_checkpoint(self, name, model, optimizers=None, schedulers=None, chkpt_dir=None, strict=True, set_rng_state=False):
         if chkpt_dir:
             name = os.path.join(chkpt_dir, name)
         checkpoint = torch.load(name)
 
         model.load_checkpoint_state_dict(checkpoint['state_dict'], strict=strict)
-        for k, v in optimizers.items():
-            v.load_state_dict(checkpoint['optimizers'][k])
-        for k, v in schedulers.items():
-            v.load_state_dict(checkpoint['lr_schedulers'][k])
+        
+        if optimizers:
+            for k, v in optimizers.items():
+                if k not in checkpoint['optimizers']:
+                    raise ValueError(f"Optimizer {k} not found in checkpoint")
+                
+                v.load_state_dict(checkpoint['optimizers'][k])
+        
+        if schedulers:
+            for k, v in schedulers.items():
+                if k not in checkpoint['lr_schedulers']:
+                    raise ValueError(f"LR Scheduler {k} not found in checkpoint")
+                
+                v.load_state_dict(checkpoint['lr_schedulers'][k])
 
         self.global_step = checkpoint['global_step']
         self.train_step = checkpoint['train_step']
         self.val_step = checkpoint['val_step']
+        self.epoch_idx = checkpoint['epoch_idx']
+
+        if set_rng_state and 'rng_state' in checkpoint:
+            self.set_rng_state_dict(checkpoint['rng_state'])
 
     def step(self, mode, model, input_dict, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
 
@@ -230,25 +267,25 @@ class Trainer:
             logger.epoch_done()        
                 
 
-
-
-    def train(self, model: Model, train_dataset, loader_args, val_dataset=None, logger=None):
-        # General Setup and Random Seed Initialization
-        self._reset_random_seed()        
-        torch.set_float32_matmul_precision(self.float32_matmul_precision)
-
-        self._reset_steps()
-
+    def _prepare_model_training(self, model: Model):
         # Move model to device & compile if needed
         model.to(self.device)       
         if self.compile_model:
             print("Compiling Model")      
             model = torch.compile(model)
 
-        optimizers, schedulers, gradient_clipping = model.configure_optimizers()
+        self.optimizers, self.schedulers, self.gradient_clipping = model.configure_optimizers()
 
-        # Train Loop
-        for epoch_idx in range(self.max_epochs):
+        torch.set_float32_matmul_precision(self.float32_matmul_precision)
+
+
+    def _model_training_loop(self, model: Model, train_dataset, loader_args, val_dataset=None, logger=None, checkpoint_path=None):
+        # Check that the model is already prepared for training
+        if not self.optimizers:
+            raise ValueError("Model is not prepared for training. Please call prepare_model_training() before calling continue_training()")
+        
+        # Train Loop from self.epoch_idx to self.max_epochs
+        for epoch_idx in range(self.epoch_idx, self.max_epochs):            
             if val_dataset:
                 model.eval()
                 val_loader = torch.utils.data.DataLoader(val_dataset, shuffle=False, **loader_args)
@@ -256,7 +293,38 @@ class Trainer:
 
             model.train()
             train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, **loader_args)
-            self.epoch(mode='train', model=model, epoch=epoch_idx, dataset=train_loader, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)
+            self.epoch(mode='train', model=model, epoch=epoch_idx, dataset=train_loader, optimizers=self.optimizers, schedulers=self.schedulers, gradient_clipping=self.gradient_clipping, logger=logger)
+
+            # Set to next epoch 
+            self.epoch_idx = epoch_idx + 1
+
+            # TODO: Check for checkpointing or early stopping
 
         # Save last.ckpt
-        self.save_checkpoint('last.ckpt', model, optimizers, schedulers)
+        last_chkpt = 'last.ckpt'
+        if checkpoint_path:
+            last_chkpt = os.path.join(checkpoint_path, last_chkpt)
+
+        self.save_checkpoint(last_chkpt, model, self.optimizers, self.schedulers)
+    
+    def train(self, model: Model, train_dataset, loader_args, val_dataset=None, logger=None, checkpoint_path=None):
+        # Reset RNG and Steps
+        self._reset_random_seed()        
+        self._reset_steps()
+
+        # Prepare Model for Training
+        self._prepare_model_training(model)
+
+        # Train Loop
+        self._model_training_loop(model=model, train_dataset=train_dataset, loader_args=loader_args, val_dataset=val_dataset, logger=logger, checkpoint_path=checkpoint_path)
+
+    def resume_training(self, model: Model, chkpt_name:str, train_dataset, loader_args, val_dataset=None, logger=None, checkpoint_path=None):
+        # Prepare Model for Training
+        self._prepare_model_training(model)
+
+        # Load Checkpoint
+        self.load_checkpoint(name=chkpt_name, model=model, optimizers=self.optimizers, schedulers=self.schedulers, chkpt_dir=checkpoint_path, set_rng_state=True)
+
+        # Train Loop
+        self._model_training_loop(model=model, train_dataset=train_dataset, loader_args=loader_args, val_dataset=val_dataset, logger=logger, checkpoint_path=checkpoint_path)
+

@@ -36,15 +36,16 @@ class TestCheckpoint(unittest.TestCase):
                 # Load the checkpoint via torch
                 checkpoint = torch.load(os.path.join(tmpdirname, 'test.ckpt'))
 
-                assert checkpoint.keys() == {'hypatorch_version', 'state_dict', 'optimizers', 'lr_schedulers', 'global_step', 'train_step', 'val_step'}
+                assert checkpoint.keys() == {'hypatorch_version', 'state_dict', 'optimizers', 'global_step', 'train_step', 'epoch_idx', 'val_step', 'rng_state'}
 
                 assert checkpoint['hypatorch_version'] == hypatorch.__version__
                 assert checkpoint['global_step'] == 0
                 assert checkpoint['train_step'] == 0
                 assert checkpoint['val_step'] == 0
+                assert checkpoint['epoch_idx'] == 0
                 assert checkpoint['state_dict'].keys() == model.state_dict().keys()
                 assert checkpoint['optimizers'].keys() == optimizer.keys()
-                assert checkpoint['lr_schedulers'].keys() == scheduler.keys()
+                assert checkpoint['rng_state'].keys() == trainer.get_rng_state_dict().keys()
     
     def test_load_checkpoint(self):
         with add_path(self.training_path):
@@ -81,6 +82,7 @@ class TestCheckpoint(unittest.TestCase):
                 assert trainer.global_step == restored_trainer.global_step
                 assert trainer.train_step == restored_trainer.train_step
                 assert trainer.val_step == restored_trainer.val_step
+                assert trainer.epoch_idx == restored_trainer.epoch_idx
 
                 for k in model.state_dict().keys():
                     assert torch.allclose(model.state_dict()[k], restored_model.state_dict()[k])
