@@ -689,3 +689,19 @@ class Model( torch.nn.Module ):
                 ]
             for key in keys_to_remove:
                 state_dict.pop(key, None)
+
+            
+    def load_checkpoint_state_dict(self, state_dict, strict=True):
+        # Try to load all submoduless that are no in the exclude_from_checkpoint list
+        submodules_with_parameters = set((p.split('.')[0] for p in  self.state_dict().keys()))
+
+        # Remove the submodules that are in the exclude_from_checkpoint list
+        submodules_to_load = submodules_with_parameters - set(self.exclude_from_checkpoint)
+
+        for submodule in submodules_to_load:
+            module_state_dict = {'.'.join(k.split('.')[1:]): v for k, v in state_dict.items() if k.startswith(submodule + '.')}
+            if len(module_state_dict) == 0:
+                raise ValueError(f"Submodule {submodule} not found in the checkpoint.")
+            
+
+            getattr(self, submodule).load_state_dict(module_state_dict, strict=strict)

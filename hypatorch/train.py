@@ -1,3 +1,4 @@
+import os
 import torch
 from contextlib import ExitStack, nullcontext
 
@@ -95,9 +96,11 @@ class Trainer:
 
         return current_step, current_global_step
 
-    def save_checkpoint(self, name, model, optimizers, schedulers):
-        checkpoint = {}
+    def save_checkpoint(self, name, model, optimizers, schedulers, chkpt_dir=None):
+        from . import __version__
 
+        checkpoint = {}
+        checkpoint['hypatorch_version'] = __version__
         checkpoint['state_dict'] = model.state_dict()
         checkpoint['optimizers'] = {k: v.state_dict() for k, v in optimizers.items()}
         checkpoint['lr_schedulers'] = {k: v.state_dict() for k, v in schedulers.items()}
@@ -106,7 +109,24 @@ class Trainer:
         checkpoint['val_step'] = self.val_step
 
         # Save to output directory
+        if chkpt_dir:
+            name = os.path.join(chkpt_dir, name)
         torch.save(checkpoint, name)
+
+    def load_checkpoint(self, name, model, optimizers, schedulers, chkpt_dir=None, strict=True):
+        if chkpt_dir:
+            name = os.path.join(chkpt_dir, name)
+        checkpoint = torch.load(name)
+
+        model.load_checkpoint_state_dict(checkpoint['state_dict'], strict=strict)
+        for k, v in optimizers.items():
+            v.load_state_dict(checkpoint['optimizers'][k])
+        for k, v in schedulers.items():
+            v.load_state_dict(checkpoint['lr_schedulers'][k])
+
+        self.global_step = checkpoint['global_step']
+        self.train_step = checkpoint['train_step']
+        self.val_step = checkpoint['val_step']
 
     def step(self, mode, model, input_dict, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
 

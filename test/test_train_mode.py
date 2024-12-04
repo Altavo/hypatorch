@@ -18,7 +18,7 @@ class TestTrainMode(unittest.TestCase):
         with initialize(
             config_path=os.path.join(rel_config_dir, "conf"), version_base="1.1"
         ):
-            self.cfg = compose(config_name="config.yaml", overrides=['+experiment=mnist_linear'])
+            self.cfg = compose(config_name="config.yaml", overrides=['experiment=mnist_linear'])
 
     def test_train(self):
         with add_path(self.training_path):
