@@ -95,6 +95,19 @@ class Trainer:
 
         return current_step, current_global_step
 
+    def save_checkpoint(self, name, model, optimizers, schedulers):
+        checkpoint = {}
+
+        checkpoint['state_dict'] = model.state_dict()
+        checkpoint['optimizers'] = {k: v.state_dict() for k, v in optimizers.items()}
+        checkpoint['lr_schedulers'] = {k: v.state_dict() for k, v in schedulers.items()}
+        checkpoint['global_step'] = self.global_step
+        checkpoint['train_step'] = self.train_step
+        checkpoint['val_step'] = self.val_step
+
+        # Save to output directory
+        torch.save(checkpoint, name)
+
     def step(self, mode, model, input_dict, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
 
         step, global_step = self._next_step(mode)
@@ -216,11 +229,14 @@ class Trainer:
 
         # Train Loop
         for epoch_idx in range(self.max_epochs):
-            model.train()
-            train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, **loader_args)
-            self.epoch(mode='train', model=model, epoch=epoch_idx, dataset=train_loader, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)
-
             if val_dataset:
                 model.eval()
                 val_loader = torch.utils.data.DataLoader(val_dataset, shuffle=False, **loader_args)
                 self.epoch(mode='val', model=model, epoch=epoch_idx, dataset=val_loader, logger=logger)
+
+            model.train()
+            train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, **loader_args)
+            self.epoch(mode='train', model=model, epoch=epoch_idx, dataset=train_loader, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)
+
+        # Save last.ckpt
+        self.save_checkpoint('last.ckpt', model, optimizers, schedulers)

@@ -2,7 +2,8 @@
 
 defaults:
   - /dataset: mnist
+  - /model: lenet
   
 trainer:
-  max_epochs: 5
+  max_epochs: 1
   max_samples: 1000000

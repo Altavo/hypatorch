@@ -680,10 +680,12 @@ class Model( torch.nn.Module ):
             
         return data_dict
     
-    def on_save_checkpoint(self, checkpoint):
+    def checkpoint_state_dict(self):
+        state_dict = self.state_dict()
+
         for submodule in self.exclude_from_checkpoint:
             keys_to_remove = [
-                k for k in checkpoint['state_dict'].keys() if k.startswith(submodule + '.')
+                k for k in state_dict.keys() if k.startswith(submodule + '.')
                 ]
             for key in keys_to_remove:
-                checkpoint['state_dict'].pop(key, None)
+                state_dict.pop(key, None)
