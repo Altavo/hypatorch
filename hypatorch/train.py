@@ -47,9 +47,12 @@ class Trainer:
         # Termination
         self.max_epochs = max_epochs
 
+        # Training State
         self.optimizers = None
         self.schedulers = None
         self.gradient_clipping = None
+        self.model = None
+        self.rng_state_dict = None
 
     def _reset_steps(self):
         self.global_step = 0
@@ -278,22 +281,21 @@ class Trainer:
 
         torch.set_float32_matmul_precision(self.float32_matmul_precision)
 
+        self.model = model
 
-    def _model_training_loop(self, model: Model, train_dataset, loader_args, val_dataset=None, logger=None, checkpoint_path=None):
-        # Check that the model is already prepared for training
-        if not self.optimizers:
-            raise ValueError("Model is not prepared for training. Please call prepare_model_training() before calling continue_training()")
+
+    def _training_loop(self, train_dataset, loader_args, val_dataset=None, logger=None, checkpoint_path=None):
         
         # Train Loop from self.epoch_idx to self.max_epochs
         for epoch_idx in range(self.epoch_idx, self.max_epochs):            
             if val_dataset:
-                model.eval()
+                self.model.eval()
                 val_loader = torch.utils.data.DataLoader(val_dataset, shuffle=False, **loader_args)
-                self.epoch(mode='val', model=model, epoch=epoch_idx, dataset=val_loader, logger=logger)
+                self.epoch(mode='val', model=self.model, epoch=epoch_idx, dataset=val_loader, logger=logger)
 
-            model.train()
+            self.model.train()
             train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, **loader_args)
-            self.epoch(mode='train', model=model, epoch=epoch_idx, dataset=train_loader, optimizers=self.optimizers, schedulers=self.schedulers, gradient_clipping=self.gradient_clipping, logger=logger)
+            self.epoch(mode='train', model=self.model, epoch=epoch_idx, dataset=train_loader, optimizers=self.optimizers, schedulers=self.schedulers, gradient_clipping=self.gradient_clipping, logger=logger)
 
             # Set to next epoch 
             self.epoch_idx = epoch_idx + 1
@@ -305,8 +307,11 @@ class Trainer:
         if checkpoint_path:
             last_chkpt = os.path.join(checkpoint_path, last_chkpt)
 
-        self.save_checkpoint(last_chkpt, model, self.optimizers, self.schedulers)
+        self.save_checkpoint(last_chkpt, self.model, self.optimizers, self.schedulers)
+
+        self.rng_state_dict = self.get_rng_state_dict()
     
+
     def train(self, model: Model, train_dataset, loader_args, val_dataset=None, logger=None, checkpoint_path=None):
         # Reset RNG and Steps
         self._reset_random_seed()        
@@ -316,7 +321,7 @@ class Trainer:
         self._prepare_model_training(model)
 
         # Train Loop
-        self._model_training_loop(model=model, train_dataset=train_dataset, loader_args=loader_args, val_dataset=val_dataset, logger=logger, checkpoint_path=checkpoint_path)
+        self._training_loop(train_dataset=train_dataset, loader_args=loader_args, val_dataset=val_dataset, logger=logger, checkpoint_path=checkpoint_path)
 
     def resume_training(self, model: Model, chkpt_name:str, train_dataset, loader_args, val_dataset=None, logger=None, checkpoint_path=None):
         # Prepare Model for Training
@@ -326,5 +331,15 @@ class Trainer:
         self.load_checkpoint(name=chkpt_name, model=model, optimizers=self.optimizers, schedulers=self.schedulers, chkpt_dir=checkpoint_path, set_rng_state=True)
 
         # Train Loop
-        self._model_training_loop(model=model, train_dataset=train_dataset, loader_args=loader_args, val_dataset=val_dataset, logger=logger, checkpoint_path=checkpoint_path)
+        self._training_loop(train_dataset=train_dataset, loader_args=loader_args, val_dataset=val_dataset, logger=logger, checkpoint_path=checkpoint_path)
 
+
+    def continue_training(self, train_dataset, loader_args, val_dataset=None, logger=None, checkpoint_path=None):
+        # Check that the model is already prepared for training
+        if not self.optimizers or not self.model or not self.rng_state_dict:
+            raise ValueError("No training can be continued. Please call train() or resume_training() before contine_training()")
+
+        self.set_rng_state_dict(self.rng_state_dict)
+
+        # Train Loop
+        self._training_loop(train_dataset=train_dataset, loader_args=loader_args, val_dataset=val_dataset, logger=logger, checkpoint_path=checkpoint_path)

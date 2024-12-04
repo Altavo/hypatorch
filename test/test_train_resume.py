@@ -42,8 +42,6 @@ class TestTrainResume(unittest.TestCase):
                 model = instantiate(self.cfg.model)
                 resumed_model = instantiate(self.cfg.model)
                 resumed_model.load_state_dict(model.state_dict())
-                test_model = instantiate(self.cfg.model)
-                test_model.load_state_dict(model.state_dict())
 
                 trainer = hypatorch.Trainer(**self.cfg.trainer)
                 trainer.max_epochs = 1
@@ -52,10 +50,10 @@ class TestTrainResume(unittest.TestCase):
                 resumed_trainer = hypatorch.Trainer(**self.cfg.trainer)
                 resumed_trainer.resume_training(model=resumed_model, chkpt_name='last.ckpt', train_dataset=train_dataset, loader_args=self.cfg.dataloader, checkpoint_path=tmpdirname)
 
-                test_trainer = hypatorch.Trainer(**self.cfg.trainer)
-                test_trainer.train(model=test_model, train_dataset=train_dataset, loader_args=self.cfg.dataloader, checkpoint_path=tmpdirname)
+                trainer.max_epochs = 2
+                trainer.continue_training(train_dataset=train_dataset, loader_args=self.cfg.dataloader, checkpoint_path=tmpdirname)
 
                 # Verify that the two models are the same
-                for k,v in test_model.state_dict().items():
+                for k,v in model.state_dict().items():
                     assert torch.allclose(v, resumed_model.state_dict()[k])
 
