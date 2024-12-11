@@ -1,5 +1,7 @@
 import os
 import torch
+import torch.distributed
+from torch.nn.parallel import DistributedDataParallel as DDP
 from contextlib import ExitStack, nullcontext
 
 from .core import Model
@@ -9,6 +11,8 @@ class Trainer:
     def __init__(self,
                  max_epochs,
                  device = None, 
+                 rank = 0,
+                 world_size = 1,
                  log_every_n_steps = 25, 
                  logger=None,
                  seed=1234,
@@ -18,10 +22,20 @@ class Trainer:
                  grad_accum_steps=1,
                  **kwargs):
 
+        self._process_group_initialized = False
+
         # Device setup
         self.device = device       
         if self.device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.rank = rank
+        self.world_size = world_size
+        if self.device == torch.device("cuda") or self.device == "cuda" and self.world_size > torch.cuda.device_count():
+            raise ValueError(f"Trainer world_size is {self.world_size} but only {torch.cuda.device_count()} GPUs available.")
+
+
+        self._init_process_group()
 
         # Computation setup
         self.float32_matmul_precision = float32_matmul_precision
@@ -54,6 +68,9 @@ class Trainer:
         self.model = None
         self.rng_state_dict = None
 
+    def __del__(self):
+        self._cleanup_process_group()
+
     def _reset_steps(self):
         self.global_step = 0
         self.train_step = 0
@@ -77,6 +94,18 @@ class Trainer:
         torch.set_rng_state(rng_state_dict['torch_rng_state'])
         if torch.cuda.is_available():
             torch.cuda.set_rng_state_all(rng_state_dict['torch_cuda_rng_state'])
+
+    def _init_process_group(self):
+        if self.world_size > 1:  
+            torch.cuda.set_device(self.rank)
+            os.environ['MASTER_ADDR'] = 'localhost'
+            os.environ['MASTER_PORT'] = '12356'            
+            torch.distributed.init_process_group("nccl", rank=self.rank, world_size=self.world_size)      
+            self._process_group_initialized = True
+
+    def _cleanup_process_group(self):
+        if self._process_group_initialized:
+            torch.distributed.destroy_process_group()
 
     def _forward_context(self, mode):
         forward_context = ExitStack()
@@ -168,7 +197,7 @@ class Trainer:
         if set_rng_state and 'rng_state' in checkpoint:
             self.set_rng_state_dict(checkpoint['rng_state'])
 
-    def step(self, mode, model, input_dict, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
+    def step(self, mode, input_dict, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
 
         step, global_step = self._next_step(mode)
 
@@ -180,11 +209,11 @@ class Trainer:
         output_dict = {}
 
         # Iterate over all operations
-        for operation_name in model.operations.keys():
+        for operation_name in self.model_operations.keys():
 
             with self._forward_context(mode):
                 # Forward Pass
-                operation_output = model(
+                operation_output = self.model(
                     input_dict = shared_dict(input_dict, output_dict),
                     operation_name = operation_name,
                     mode = mode,
@@ -197,7 +226,7 @@ class Trainer:
                 )
 
                 # Loss computation            
-                loss = model.compute_loss(
+                loss = self.compute_loss(
                     x = shared_dict(input_dict, output_dict),
                     operation_name = operation_name,
                     mode = mode,
@@ -209,7 +238,7 @@ class Trainer:
                     loss = loss / self.grad_accum_steps
                     
                     if optimizers:
-                        with self._backward_context(model, step):
+                        with self._backward_context(self.model, step):
                             loss.backward()
 
             # Check if one optimizer step is completed
@@ -230,7 +259,7 @@ class Trainer:
                 opt.zero_grad()
             
             # Metrics
-            metrics = model.compute_metrics(
+            metrics = self.compute_metrics(
                 x = shared_dict(input_dict, output_dict),
                 operation_name = operation_name,
                 mode = mode,
@@ -243,26 +272,25 @@ class Trainer:
         return output_dict, metrics, step, global_step
 
 
-    def epoch(self, mode, model, epoch, dataset, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
-        operations = model.operations.keys()
+    def epoch(self, mode, epoch, dataset, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
 
         # Zero all gradients
         if optimizers:
-            for operation_name in operations:
+            for operation_name in self.model_operations:
                 optimizers[ operation_name ].zero_grad()
 
         if logger:
             logger.log_value(f'{mode}_epoch', epoch)
         
         for epoch_step, input_dict in enumerate(dataset):           
-            output_dict, metrics, step, global_step = self.step(mode=mode, model=model, input_dict=input_dict, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)
+            output_dict, metrics, step, global_step = self.step(mode=mode, input_dict=input_dict, optimizers=optimizers, schedulers=schedulers, gradient_clipping=gradient_clipping, logger=logger)
 
             # On the first step in validation log the data
             if logger and epoch_step == 0 and mode == 'val':
-                model.log_data(data_dict=shared_dict(input_dict, output_dict), step=global_step, logger=logger)
+                self.log_data(data_dict=shared_dict(input_dict, output_dict), step=global_step, logger=logger)
 
         # End of epoch
-        for operation_name in operations:
+        for operation_name in self.model_operations:
             if schedulers and operation_name in schedulers:
                 schedulers[ operation_name ].epoch_done()
 
@@ -273,11 +301,20 @@ class Trainer:
     def _prepare_model_training(self, model: Model):
         # Move model to device & compile if needed
         model.to(self.device)       
+
+        self.optimizers, self.schedulers, self.gradient_clipping = model.configure_optimizers()
+        self.model_operations = model.operations
+        self.log_data = model.log_data
+        self.compute_loss = model.compute_loss
+        self.compute_metrics = model.compute_metrics
+
+        if self.world_size > 1:
+            model = DDP(model, device_ids=[self.rank])
+
         if self.compile_model:
             print("Compiling Model")      
             model = torch.compile(model)
 
-        self.optimizers, self.schedulers, self.gradient_clipping = model.configure_optimizers()
 
         torch.set_float32_matmul_precision(self.float32_matmul_precision)
 
@@ -291,11 +328,11 @@ class Trainer:
             if val_dataset:
                 self.model.eval()
                 val_loader = torch.utils.data.DataLoader(val_dataset, shuffle=False, **loader_args)
-                self.epoch(mode='val', model=self.model, epoch=epoch_idx, dataset=val_loader, logger=logger)
+                self.epoch(mode='val', epoch=epoch_idx, dataset=val_loader, logger=logger)
 
             self.model.train()
             train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, **loader_args)
-            self.epoch(mode='train', model=self.model, epoch=epoch_idx, dataset=train_loader, optimizers=self.optimizers, schedulers=self.schedulers, gradient_clipping=self.gradient_clipping, logger=logger)
+            self.epoch(mode='train', epoch=epoch_idx, dataset=train_loader, optimizers=self.optimizers, schedulers=self.schedulers, gradient_clipping=self.gradient_clipping, logger=logger)
 
             # Set to next epoch 
             self.epoch_idx = epoch_idx + 1

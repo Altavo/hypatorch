@@ -5,7 +5,7 @@
 # Example: python train.py +experiment=glowtts
 
 defaults:
-  - device: cpu
+  - device: gpu
   - device/${device}@_here_
   - logger: console
   - experiment: mnist
