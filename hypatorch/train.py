@@ -3,6 +3,7 @@ import torch
 import torch.distributed
 from torch.nn.parallel import DistributedDataParallel as DDP
 from contextlib import ExitStack, nullcontext
+import logging
 
 from .core import Model
 from .utils import shared_dict, update_output
@@ -31,9 +32,10 @@ class Trainer:
 
         self.rank = rank
         self.world_size = world_size
-        if self.device == torch.device("cuda") or self.device == "cuda" and self.world_size > torch.cuda.device_count():
+        if (self.device == torch.device("cuda") or self.device == "cuda") and self.world_size > torch.cuda.device_count():
             raise ValueError(f"Trainer world_size is {self.world_size} but only {torch.cuda.device_count()} GPUs available.")
 
+        logging.info(f"Using Device {self.device} with World Size {self.world_size}")
 
         self._init_process_group()
 
@@ -98,8 +100,6 @@ class Trainer:
     def _init_process_group(self):
         if self.world_size > 1:  
             torch.cuda.set_device(self.rank)
-            os.environ['MASTER_ADDR'] = 'localhost'
-            os.environ['MASTER_PORT'] = '12356'            
             torch.distributed.init_process_group("nccl", rank=self.rank, world_size=self.world_size)      
             self._process_group_initialized = True
 
@@ -147,12 +147,12 @@ class Trainer:
 
         return current_step, current_global_step
 
-    def save_checkpoint(self, name, model, optimizers=None, schedulers=None, chkpt_dir=None):
+    def save_checkpoint(self, name, optimizers=None, schedulers=None, chkpt_dir=None):
         from . import __version__
 
         checkpoint = {}
         checkpoint['hypatorch_version'] = __version__
-        checkpoint['state_dict'] = model.state_dict()
+        checkpoint['state_dict'] = self.model.state_dict()
         if optimizers:
             checkpoint['optimizers'] = {k: v.state_dict() for k, v in optimizers.items()}
         if schedulers:
@@ -168,12 +168,12 @@ class Trainer:
             name = os.path.join(chkpt_dir, name)
         torch.save(checkpoint, name)
 
-    def load_checkpoint(self, name, model, optimizers=None, schedulers=None, chkpt_dir=None, strict=True, set_rng_state=False):
+    def load_checkpoint(self, name, optimizers=None, schedulers=None, chkpt_dir=None, strict=True, set_rng_state=False):
         if chkpt_dir:
             name = os.path.join(chkpt_dir, name)
         checkpoint = torch.load(name)
 
-        model.load_checkpoint_state_dict(checkpoint['state_dict'], strict=strict)
+        self.model.load_checkpoint_state_dict(checkpoint['state_dict'], strict=strict)
         
         if optimizers:
             for k, v in optimizers.items():
@@ -298,7 +298,7 @@ class Trainer:
             logger.epoch_done()        
                 
 
-    def _prepare_model_training(self, model: Model):
+    def prepare_model_training(self, model: Model):
         # Move model to device & compile if needed
         model.to(self.device)       
 
@@ -344,7 +344,7 @@ class Trainer:
         if checkpoint_path:
             last_chkpt = os.path.join(checkpoint_path, last_chkpt)
 
-        self.save_checkpoint(last_chkpt, self.model, self.optimizers, self.schedulers)
+        self.save_checkpoint(last_chkpt, self.optimizers, self.schedulers)
 
         self.rng_state_dict = self.get_rng_state_dict()
     
@@ -355,14 +355,14 @@ class Trainer:
         self._reset_steps()
 
         # Prepare Model for Training
-        self._prepare_model_training(model)
+        self.prepare_model_training(model)
 
         # Train Loop
         self._training_loop(train_dataset=train_dataset, loader_args=loader_args, val_dataset=val_dataset, logger=logger, checkpoint_path=checkpoint_path)
 
     def resume_training(self, model: Model, chkpt_name:str, train_dataset, loader_args, val_dataset=None, logger=None, checkpoint_path=None):
         # Prepare Model for Training
-        self._prepare_model_training(model)
+        self.prepare_model_training(model)
 
         # Load Checkpoint
         self.load_checkpoint(name=chkpt_name, model=model, optimizers=self.optimizers, schedulers=self.schedulers, chkpt_dir=checkpoint_path, set_rng_state=True)

@@ -1,8 +1,7 @@
 dataloader:
   pin_memory: True
-  num_workers: 0
+  num_workers: 2
 
 trainer:
   device: cuda
-  world_size: 2
   

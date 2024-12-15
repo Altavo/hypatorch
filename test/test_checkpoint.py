@@ -28,7 +28,8 @@ class TestCheckpoint(unittest.TestCase):
             # Create a temp directory 
             with tempfile.TemporaryDirectory() as tmpdirname:
                 trainer = hypatorch.Trainer(**self.cfg.trainer)
-                trainer.save_checkpoint('test.ckpt', model, optimizer, scheduler, chkpt_dir=tmpdirname)
+                trainer.prepare_model_training(model)
+                trainer.save_checkpoint('test.ckpt', optimizer, scheduler, chkpt_dir=tmpdirname)
 
                 # Verify that the checkpoint was saved
                 assert os.path.exists(os.path.join(tmpdirname, 'test.ckpt'))
@@ -60,22 +61,24 @@ class TestCheckpoint(unittest.TestCase):
             # Create a temp directory 
             with tempfile.TemporaryDirectory() as tmpdirname:
                 trainer = hypatorch.Trainer(**self.cfg.trainer)
+                trainer.prepare_model_training(model)
 
-                trainer.step('train', model, batch, optimizer, scheduler, logger=None)
+                trainer.step('train', batch, optimizer, scheduler, logger=None)
 
-                trainer.save_checkpoint('test.ckpt', model, optimizer, scheduler, chkpt_dir=tmpdirname)
+                trainer.save_checkpoint('test.ckpt', optimizer, scheduler, chkpt_dir=tmpdirname)
 
-                trainer.step('train', model, batch, optimizer, scheduler, logger=None)
+                trainer.step('train', batch, optimizer, scheduler, logger=None)
 
                 # Create a new trainer and model
                 restored_model = instantiate(self.cfg.model)
                 restored_optimizer, restored_scheduler, _ = restored_model.configure_optimizers()
                 restored_trainer = hypatorch.Trainer(**self.cfg.trainer)
+                restored_trainer.prepare_model_training(restored_model)
 
                 # Load the checkpoint
-                restored_trainer.load_checkpoint('test.ckpt', restored_model, restored_optimizer, restored_scheduler, chkpt_dir=tmpdirname)
+                restored_trainer.load_checkpoint('test.ckpt', restored_optimizer, restored_scheduler, chkpt_dir=tmpdirname)
 
-                restored_trainer.step('train', restored_model, batch, restored_optimizer, restored_scheduler, logger=None)
+                restored_trainer.step('train', batch, restored_optimizer, restored_scheduler, logger=None)
 
                 # Verify the states of restored and original are the same
 

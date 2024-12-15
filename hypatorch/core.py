@@ -121,13 +121,7 @@ class Model( torch.nn.Module ):
             ).values():
             optimized_sm_list.extend( x )
         optimized_sm_set = set( optimized_sm_list )
-        logging.info(
-            f"""
-            All submodules that get optimized by at least
-            one optimizer: {optimized_sm_set}
-            """
-            )
-
+        
         # self frozen is the disjoin of the optimized submodules and submodule_names
         self.frozen = list( set( self.submodule_names ) - optimized_sm_set )
         logging.info(
