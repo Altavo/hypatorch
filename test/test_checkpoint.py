@@ -35,7 +35,7 @@ class TestCheckpoint(unittest.TestCase):
                 assert os.path.exists(os.path.join(tmpdirname, 'test.ckpt'))
 
                 # Load the checkpoint via torch
-                checkpoint = torch.load(os.path.join(tmpdirname, 'test.ckpt'))
+                checkpoint = torch.load(os.path.join(tmpdirname, 'test.ckpt'), weights_only=True)
 
                 assert checkpoint.keys() == {'hypatorch_version', 'state_dict', 'optimizers', 'global_step', 'train_step', 'epoch_idx', 'val_step', 'rng_state'}
 

@@ -21,6 +21,15 @@ class Trainer:
                  grad_accum_steps=1,
                  **kwargs):
 
+        self.rank = get_rank()
+        self.world_size = get_world_size()
+
+        # Optimizer setup - parallelized gradient accumulation with world_size > 1
+        if grad_accum_steps % self.world_size != 0:
+            raise ValueError("world size %d must be a multiple of grad_accum_steps %d")
+
+        self.grad_accum_steps = grad_accum_steps // self.world_size
+
         self._process_group_initialized = False
 
         # Device setup
@@ -28,8 +37,6 @@ class Trainer:
         if self.device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.rank = get_rank()
-        self.world_size = get_world_size()
         if (self.device == torch.device("cuda") or self.device == "cuda") and self.world_size > torch.cuda.device_count():
             raise ValueError(f"Trainer world_size is {self.world_size} but only {torch.cuda.device_count()} GPUs available.")
 
@@ -49,8 +56,6 @@ class Trainer:
         self.log_every_n_steps = log_every_n_steps
         self.logger = logger
 
-        # Optimizer setup
-        self.grad_accum_steps = grad_accum_steps
 
         # Step
         self.global_step = 0
@@ -126,8 +131,8 @@ class Trainer:
         return (epoch_step + 1) % self.grad_accum_steps == 0
 
     def _backward_context(self, model, epoch_step):
-        # In DDP we only want to sync gradients every grad_accum_steps
-        if hasattr(model, 'no_sync') and self._is_optimizer_step_complete(epoch_step):
+        # In DDP we only want to sync gradients when an optimizer step completes
+        if hasattr(model, 'no_sync') and not self._is_optimizer_step_complete(epoch_step):
             return model.no_sync()
         else:
             return nullcontext()
@@ -169,7 +174,7 @@ class Trainer:
     def load_checkpoint(self, name, optimizers=None, schedulers=None, chkpt_dir=None, strict=True, set_rng_state=False):
         if chkpt_dir:
             name = os.path.join(chkpt_dir, name)
-        checkpoint = torch.load(name)
+        checkpoint = torch.load(name, weights_only=True)
 
         self.model.load_checkpoint_state_dict(checkpoint['state_dict'], strict=strict)
         
@@ -363,7 +368,7 @@ class Trainer:
         self.prepare_model_training(model)
 
         # Load Checkpoint
-        self.load_checkpoint(name=chkpt_name, model=model, optimizers=self.optimizers, schedulers=self.schedulers, chkpt_dir=checkpoint_path, set_rng_state=True)
+        self.load_checkpoint(name=chkpt_name, optimizers=self.optimizers, schedulers=self.schedulers, chkpt_dir=checkpoint_path, set_rng_state=True)
 
         # Train Loop
         self._training_loop(train_dataset=train_dataset, loader_args=loader_args, val_dataset=val_dataset, logger=logger, checkpoint_path=checkpoint_path)

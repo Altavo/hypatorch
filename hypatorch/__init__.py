@@ -6,5 +6,6 @@ from hypatorch.losses import MSE_Loss
 from hypatorch.losses import MMSE_Loss
 from hypatorch.train import Trainer
 from hypatorch import logger
+from hypatorch.dataset import DictedDataset, DistributedDataset
 
 __version__ = '0.2.14'

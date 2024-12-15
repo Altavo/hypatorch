@@ -9,7 +9,7 @@ import hypatorch
 
 from shared import add_path
 
-class TestDataset(torch.utils.data.Dataset):
+class Dataset(torch.utils.data.Dataset):
     def __init__(self, size):
         self.size = size
     def __len__(self):
@@ -35,7 +35,7 @@ class TestTrainResume(unittest.TestCase):
     
     def test_train_resume(self):
         with add_path(self.training_path):
-            train_dataset = TestDataset(64)
+            train_dataset = Dataset(64)
 
             # Create a temp directory 
             with tempfile.TemporaryDirectory() as tmpdirname:
