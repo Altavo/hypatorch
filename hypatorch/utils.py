@@ -1,3 +1,4 @@
+import os
 import torch
 import inspect
 from omegaconf import DictConfig
@@ -265,3 +266,12 @@ class LengthHarmonizer( torch.nn.Module ):
         data = [ x[ ..., :min_length ] for x in data ]
 
         return data
+
+def get_rank():
+    return int(os.environ.get("RANK", "-1"))
+
+def get_world_size():
+    return int(os.environ.get("WORLD_SIZE", 1))
+
+def is_rank_zero():
+    return get_rank() <= 0

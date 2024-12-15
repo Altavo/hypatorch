@@ -6,14 +6,12 @@ from contextlib import ExitStack, nullcontext
 import logging
 
 from .core import Model
-from .utils import shared_dict, update_output
+from .utils import shared_dict, update_output, get_rank, get_world_size
 
 class Trainer:
     def __init__(self,
                  max_epochs,
                  device = None, 
-                 rank = 0,
-                 world_size = 1,
                  log_every_n_steps = 25, 
                  logger=None,
                  seed=1234,
@@ -30,8 +28,8 @@ class Trainer:
         if self.device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.rank = rank
-        self.world_size = world_size
+        self.rank = get_rank()
+        self.world_size = get_world_size()
         if (self.device == torch.device("cuda") or self.device == "cuda") and self.world_size > torch.cuda.device_count():
             raise ValueError(f"Trainer world_size is {self.world_size} but only {torch.cuda.device_count()} GPUs available.")
 
