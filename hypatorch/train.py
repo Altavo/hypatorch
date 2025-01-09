@@ -5,15 +5,18 @@ from contextlib import ExitStack, nullcontext
 from .core import Model
 from .utils import shared_dict, update_output
 
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+
 class Trainer:
     def __init__(self,
                  max_epochs,
                  device = None, 
-                 log_every_n_steps = 25, 
                  logger=None,
                  seed=1234,
                  float32_matmul_precision='high',
                  compile_model=False,
+                 distributed=False,
                  autocast_dtype=None,
                  grad_accum_steps=1,
                  **kwargs):
@@ -30,9 +33,9 @@ class Trainer:
         if isinstance(self.autocast_dtype, str):
             self.autocast_dtype = getattr(torch, self.autocast_dtype)
         self.compile_model = compile_model
+        self.distributed = distributed
 
         # Logging setup
-        self.log_every_n_steps = log_every_n_steps
         self.logger = logger
 
         # Optimizer setup
@@ -273,6 +276,11 @@ class Trainer:
     def _prepare_model_training(self, model: Model):
         # Move model to device & compile if needed
         model.to(self.device)       
+        
+        # Enable DDP before compiling
+        if model.distributed:
+            model = DDP(model, device_ids=[self.device])
+        
         if self.compile_model:
             print("Compiling Model")      
             model = torch.compile(model)

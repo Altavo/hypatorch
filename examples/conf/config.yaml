@@ -15,10 +15,5 @@ hydra:
 
 seed: 1234
 
-model_checkpoints:
-  train_time_interval: 
-    _target_: datetime.timedelta
-    seconds: 5
-
 dataloader:
   batch_size: 32
