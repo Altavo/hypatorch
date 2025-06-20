@@ -118,6 +118,17 @@ class Trainer:
 
         return current_step, current_global_step
 
+    def _verify_checkpoint(self, checkpoint):
+        if 'hypatorch_version' not in checkpoint:
+            raise ValueError("Checkpoint does not contain 'hypatorch_version'. This might be an incompatible checkpoint.")
+        
+        if 'state_dict' not in checkpoint:
+            raise ValueError("Checkpoint does not contain 'state_dict'. This is required to load the model.")
+
+        if 'global_step' not in checkpoint or 'train_step' not in checkpoint or 'val_step' not in checkpoint or 'epoch_idx' not in checkpoint:
+            raise ValueError("Checkpoint does not contain step information. This is required for training state.")
+        
+
     def save_checkpoint(self, name, model, optimizers=None, schedulers=None, chkpt_dir=None):
         from . import __version__
 
@@ -143,10 +154,14 @@ class Trainer:
         if chkpt_dir:
             name = os.path.join(chkpt_dir, name)
         checkpoint = torch.load(name)
+        
+        self._verify_checkpoint(checkpoint)
 
         model.load_checkpoint_state_dict(checkpoint['state_dict'], strict=strict)
         
         if optimizers:
+            if 'optimizers' not in checkpoint:
+                raise ValueError("Checkpoint does not contain 'optimizers'. This is required to load the optimizers.")
             for k, v in optimizers.items():
                 if k not in checkpoint['optimizers']:
                     raise ValueError(f"Optimizer {k} not found in checkpoint")
@@ -154,6 +169,8 @@ class Trainer:
                 v.load_state_dict(checkpoint['optimizers'][k])
         
         if schedulers:
+            if 'lr_schedulers' not in checkpoint:
+                raise ValueError("Checkpoint does not contain 'lr_schedulers'. This is required to load the learning rate schedulers.")
             for k, v in schedulers.items():
                 if k not in checkpoint['lr_schedulers']:
                     raise ValueError(f"LR Scheduler {k} not found in checkpoint")
@@ -165,7 +182,9 @@ class Trainer:
         self.val_step = checkpoint['val_step']
         self.epoch_idx = checkpoint['epoch_idx']
 
-        if set_rng_state and 'rng_state' in checkpoint:
+        if set_rng_state:
+            if 'rng_state' not in checkpoint:
+                raise ValueError("Checkpoint does not contain 'rng_state'. This is required to set the random state.")
             self.set_rng_state_dict(checkpoint['rng_state'])
 
     def step(self, mode, model, input_dict, optimizers=None, schedulers=None, gradient_clipping=None, logger=None):
