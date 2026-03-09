@@ -54,9 +54,9 @@ class MaskedAssessment(torch.nn.Module):
 
     def forward(
             self,
-            inputs,
-            mask,
-            apply,
+            inputs: dict,
+            mask: torch.Tensor,
+            apply: List[str],
             ):
         if not apply:
             raise ValueError(
@@ -97,6 +97,7 @@ class HypaAssessment( torch.nn.Module ):
             weight = 1.0,
             apply: Optional[List[str]] = None,
             harmonizer_kwargs: Dict = {},
+            requires_model: bool = False,
             ):
         super().__init__()
         self.apply = apply
@@ -105,6 +106,7 @@ class HypaAssessment( torch.nn.Module ):
         self.inputs = inputs
         self.harmonize_inputs = harmonize_inputs
         self.masking = masking
+        self.requires_model = requires_model
         if masking is not None:
             self.assessment = MaskedAssessment(
                 unmasked_assessment=assessment,
@@ -119,8 +121,9 @@ class HypaAssessment( torch.nn.Module ):
     def forward(
             self,
             data_dict,
+            model
             ):
-        
+
         # Get inputs
         assessment_in = get_module_input(
             inputs = self.inputs,
@@ -146,6 +149,9 @@ class HypaAssessment( torch.nn.Module ):
             if self.masking is not None:
                 mask = h_out[-1]
         
+        if self.requires_model:
+            assessment_in['model'] = model
+
         if self.masking is not None:
             x = self.assessment(
                 inputs = assessment_in,
