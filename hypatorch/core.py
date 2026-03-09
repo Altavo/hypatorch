@@ -273,6 +273,7 @@ class Model( torch.nn.Module ):
             if fn.apply is None or mode in fn.apply:
                 y = fn(
                     data_dict = data_dict,
+                    model = self
                     )
                 x[ fn.name ] = y
 
