@@ -178,6 +178,10 @@ def get_module_input(
         data_dict: Dict,
         ):
     submodule_in = {}
+    
+    if not inputs:
+        return submodule_in
+    
     for k, v in inputs.items():
         if isinstance( v, List ) or isinstance( v, ListConfig):
             submodule_in[ k ] = [
