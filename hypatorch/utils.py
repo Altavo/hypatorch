@@ -31,7 +31,7 @@ def get_output_variable_names(func):
     source_lines = inspect.getsource(func)
     
     # Get the part after the return statement
-    return_part = source_lines.split("return ")[1]
+    return_part = source_lines.split("return ")
 
     # If no return statement or multiple return statements,
     # are found, raise an error
@@ -44,6 +44,7 @@ def get_output_variable_names(func):
             """
             )
     
+    return_part = return_part[1]
     # Remove leading and trailing "(" and ")"
     chars_to_replace = ["(", ")", "\n", " "]
     for char in chars_to_replace:
