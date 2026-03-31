@@ -1,5 +1,6 @@
 import os
 import torch
+from copy import deepcopy
 from contextlib import nullcontext
 from omegaconf import DictConfig, ListConfig
 from hydra import compose, initialize
@@ -32,6 +33,18 @@ class Scheduler:
 
         self.steps_since_update = 0
         self.epochs_since_update = 0
+
+    def state_dict(self):
+        return {
+            'scheduler': self.scheduler.state_dict(),
+            'steps_since_update': self.steps_since_update,
+            'epochs_since_update': self.epochs_since_update,
+        }
+
+    def load_state_dict(self, state_dict):
+        self.scheduler.load_state_dict(state_dict['scheduler'])
+        self.steps_since_update = state_dict.get('steps_since_update', 0)
+        self.epochs_since_update = state_dict.get('epochs_since_update', 0)
 
     def step_done(self):
         if self.interval != 'step':
@@ -174,8 +187,12 @@ class Model( torch.nn.Module ):
         
         return model
     
-    def _load_checkpoints( self ):
-        for ckpt_dict in self.checkpoints:
+    def _load_checkpoints(
+            self,
+            checkpoints_dict = None,
+            ):
+        checkpoints = self.checkpoints if checkpoints_dict is None else checkpoints_dict
+        for ckpt_dict in checkpoints:
 
             ckpt =torch.load( ckpt_dict[ 'path' ] )[ 'state_dict' ]
             if 'prefix_rm' in ckpt_dict:
@@ -302,12 +319,14 @@ class Model( torch.nn.Module ):
 
             if 'lr_scheduler' in opt and opt[ 'lr_scheduler' ] is not None:
                 # Instantiate the partially instantiated LR scheduler
-                scheduler = opt[ 'lr_scheduler' ].pop( 'scheduler' )(optimizer)
+                scheduler_cfg = deepcopy(opt[ 'lr_scheduler' ])
+                scheduler_factory = scheduler_cfg.pop( 'scheduler' )
+                scheduler = scheduler_factory(optimizer)
 
                 # Wrap the scheduler in the hypatorch scheduler to handle the frequency and interval
                 schedulers[op_name] = Scheduler(
                     scheduler = scheduler,
-                    **opt[ 'lr_scheduler' ],
+                    **scheduler_cfg,
                 )
 
             if 'gradient_clipping' in opt and opt[ 'gradient_clipping' ] is not None:
@@ -448,11 +467,11 @@ class Model( torch.nn.Module ):
         return output_dict
     
     def train(self, mode=True):
-        for submodule_name in self.submodule_names:
-            if not mode or submodule_name in self.submodules_eval:
+        super().train(mode)
+        if mode:
+            for submodule_name in self.submodules_eval:
                 getattr(self, submodule_name).eval()
-            else:
-                getattr(self, submodule_name).train()
+        return self
 
     
     def log_data(self, logger, step, data_dict):
@@ -689,6 +708,8 @@ class Model( torch.nn.Module ):
                 ]
             for key in keys_to_remove:
                 state_dict.pop(key, None)
+
+        return state_dict
 
             
     def load_checkpoint_state_dict(self, state_dict, strict=True):

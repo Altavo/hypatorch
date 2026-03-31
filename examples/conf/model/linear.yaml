@@ -5,6 +5,8 @@ defaults:
 
 submodules_eval:
 
+exclude_from_checkpoint:
+
 
 operations:
   update_encoder:

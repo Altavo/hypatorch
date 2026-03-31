@@ -57,3 +57,48 @@ class TestTrainResume(unittest.TestCase):
                 for k,v in model.state_dict().items():
                     assert torch.allclose(v, resumed_model.state_dict()[k])
 
+    def test_max_samples_stops_training(self):
+        with add_path(self.training_path):
+            train_dataset = TestDataset(64)
+
+            trainer_kwargs = dict(self.cfg.trainer)
+            trainer_kwargs["max_epochs"] = 5
+            trainer_kwargs["max_samples"] = 16
+            trainer_kwargs["save_last"] = False
+            trainer = hypatorch.Trainer(**trainer_kwargs)
+            model = instantiate(self.cfg.model)
+            trainer.train(
+                model=model,
+                train_dataset=train_dataset,
+                loader_args={"batch_size": 8},
+            )
+
+            assert trainer.train_samples == 16
+            assert trainer.train_step == 2
+            assert trainer.epoch_idx == 1
+
+    def test_time_based_checkpointing_writes_periodic_checkpoints(self):
+        with add_path(self.training_path):
+            train_dataset = TestDataset(64)
+
+            with tempfile.TemporaryDirectory() as tmpdirname:
+                trainer_kwargs = dict(self.cfg.trainer)
+                trainer_kwargs["checkpoint_interval_seconds"] = 0.0
+                trainer = hypatorch.Trainer(**trainer_kwargs)
+                model = instantiate(self.cfg.model)
+                trainer.train(
+                    model=model,
+                    train_dataset=train_dataset,
+                    loader_args={"batch_size": 8},
+                    checkpoint_path=tmpdirname,
+                )
+
+                checkpoint_files = sorted(
+                    filename for filename in os.listdir(tmpdirname) if filename.endswith(".ckpt")
+                )
+                assert "last.ckpt" in checkpoint_files
+                assert len(checkpoint_files) > 1
+
+    def test_multi_device_config_is_rejected(self):
+        with self.assertRaises(NotImplementedError):
+            hypatorch.Trainer(max_epochs=1, devices=2)

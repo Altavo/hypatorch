@@ -23,7 +23,7 @@ class TestTrainMode(unittest.TestCase):
     def test_train(self):
         with add_path(self.training_path):
             model = instantiate(self.cfg.model)
-            model.train()   
+            assert model.train() is model
 
             assert(model.image_encoder.training)
 

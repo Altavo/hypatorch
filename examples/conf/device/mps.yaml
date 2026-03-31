@@ -3,5 +3,5 @@ dataloader:
 
 trainer:
   device: mps
-  autocast_precision: fp16
+  autocast_dtype: fp16
   

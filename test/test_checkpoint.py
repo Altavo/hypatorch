@@ -36,16 +36,30 @@ class TestCheckpoint(unittest.TestCase):
                 # Load the checkpoint via torch
                 checkpoint = torch.load(os.path.join(tmpdirname, 'test.ckpt'))
 
-                assert checkpoint.keys() == {'hypatorch_version', 'state_dict', 'optimizers', 'global_step', 'train_step', 'epoch_idx', 'val_step', 'rng_state'}
+                assert checkpoint.keys() == {'hypatorch_version', 'state_dict', 'optimizers', 'global_step', 'train_step', 'epoch_idx', 'val_step', 'train_samples', 'rng_state'}
 
                 assert checkpoint['hypatorch_version'] == hypatorch.__version__
                 assert checkpoint['global_step'] == 0
                 assert checkpoint['train_step'] == 0
                 assert checkpoint['val_step'] == 0
                 assert checkpoint['epoch_idx'] == 0
+                assert checkpoint['train_samples'] == 0
                 assert checkpoint['state_dict'].keys() == model.state_dict().keys()
                 assert checkpoint['optimizers'].keys() == optimizer.keys()
                 assert checkpoint['rng_state'].keys() == trainer.get_rng_state_dict().keys()
+
+    def test_save_checkpoint_respects_exclude_from_checkpoint(self):
+        with add_path(self.training_path):
+            self.cfg.model.exclude_from_checkpoint = ['image_encoder']
+            model = instantiate(self.cfg.model)
+            optimizer, scheduler, _ = model.configure_optimizers()
+
+            with tempfile.TemporaryDirectory() as tmpdirname:
+                trainer = hypatorch.Trainer(**self.cfg.trainer)
+                trainer.save_checkpoint('test.ckpt', model, optimizer, scheduler, chkpt_dir=tmpdirname)
+
+                checkpoint = torch.load(os.path.join(tmpdirname, 'test.ckpt'))
+                assert all(not key.startswith('image_encoder.') for key in checkpoint['state_dict'].keys())
     
     def test_load_checkpoint(self):
         with add_path(self.training_path):
@@ -92,4 +106,3 @@ class TestCheckpoint(unittest.TestCase):
                         for state in optimizer[k].state_dict()['state'][k2].keys():
                             assert torch.allclose(optimizer[k].state_dict()['state'][k2][state], restored_optimizer[k].state_dict()['state'][k2][state])
                     
-
