@@ -596,7 +596,7 @@ class Trainer:
         if logger:
             logger.log_value(f"{mode}_epoch", epoch)
 
-        num_batches = len(dataset) if hasattr(dataset, "__len__") else None
+        num_batches = self._safe_len(dataset)
 
         for epoch_step, input_dict in enumerate(dataset):
             batch_size = self._infer_batch_size(input_dict) if mode == "train" else 0
@@ -641,6 +641,15 @@ class Trainer:
         if logger:
             logger.epoch_done()
 
+    @staticmethod
+    def _safe_len(dataset):
+        if not hasattr(dataset, "__len__"):
+            return None
+        try:
+            return len(dataset)
+        except TypeError:
+            return None
+
     def _prepare_model_training(self, model: Model):
         model.to(self.device)
         torch.set_float32_matmul_precision(self.float32_matmul_precision)
@@ -679,7 +688,7 @@ class Trainer:
             while self.epoch_idx < max_epochs and not self.should_stop:
                 current_epoch = self.epoch_idx
 
-                if val_dataset:
+                if val_dataset is not None:
                     self.model.eval()
                     val_loader = self._as_dataloader(
                         val_dataset,
