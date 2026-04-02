@@ -19,11 +19,11 @@ class DataLogger(ABC):
     def log_value(self, name:str, value:float|int):
         self._step_log[name] = value
 
-    def log_images(self, name:str, input_dict: dict, image_keys: list[str]):
-        pass
+    def log_images(self, *args, **kwargs):
+        del args, kwargs
 
-    def log_text(self, name: str, text: str):
-        del name, text
+    def log_text(self, *args, **kwargs):
+        del args, kwargs
 
     def log_artifact(self, local_path: str, artifact_path: str | None = None):
         del local_path, artifact_path

@@ -364,7 +364,7 @@ class Model( torch.nn.Module ):
             inputs = mapping[ submodule_name][ 'inputs' ]
 
             expected_inputs = get_input_variable_names( fn_to_inspect )
-            expected_outputs = get_output_variable_names( fn_to_inspect )
+            expected_outputs = list(output_key_map.keys())
 
             validate_io_keys(
                 module_name = submodule_name,
