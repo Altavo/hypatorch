@@ -247,13 +247,27 @@ def test_as_dataloader_uses_distributed_sampler_and_sets_epoch():
     assert loader.sampler.epoch == 3
 
 
-def test_as_dataloader_rejects_prebuilt_loader_without_distributed_sampler():
+def test_as_dataloader_rebuilds_prebuilt_loader_with_distributed_sampler():
     trainer = hypatorch.Trainer.__new__(hypatorch.Trainer)
     trainer.distributed = SimpleNamespace(enabled=True, world_size=2, rank=0)
-    loader = DataLoader(TestDataset(16), batch_size=4, shuffle=True)
+    collate_fn = lambda batch: {"count": len(batch)}
+    loader = DataLoader(
+        TestDataset(16),
+        batch_size=4,
+        shuffle=True,
+        num_workers=0,
+        collate_fn=collate_fn,
+    )
 
-    with pytest.raises(RuntimeError, match="DistributedSampler"):
-        trainer._as_dataloader(loader, shuffle=True, loader_args=None, epoch=0)
+    rebuilt = trainer._as_dataloader(loader, shuffle=True, loader_args=None, epoch=2)
+
+    assert rebuilt is not loader
+    assert isinstance(rebuilt.sampler, DistributedSampler)
+    assert rebuilt.sampler.rank == 0
+    assert rebuilt.sampler.num_replicas == 2
+    assert rebuilt.sampler.epoch == 2
+    assert rebuilt.batch_size == 4
+    assert rebuilt.collate_fn is collate_fn
 
 
 def test_ddp_checkpoint_loads_in_single_process(tmp_path):

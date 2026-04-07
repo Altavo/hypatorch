@@ -722,15 +722,57 @@ class Trainer:
         prepared_model = torch.compile(model) if self.compile_model else model
         self.model = self.distributed.wrap_model(prepared_model)
 
+    @staticmethod
+    def _loader_kwargs_from_dataloader(loader):
+        kwargs = {
+            "batch_size": loader.batch_size,
+            "num_workers": loader.num_workers,
+            "collate_fn": loader.collate_fn,
+            "pin_memory": loader.pin_memory,
+            "drop_last": loader.drop_last,
+            "timeout": loader.timeout,
+            "worker_init_fn": loader.worker_init_fn,
+            "multiprocessing_context": loader.multiprocessing_context,
+            "generator": loader.generator,
+        }
+        prefetch_factor = getattr(loader, "prefetch_factor", None)
+        if prefetch_factor is not None and loader.num_workers > 0:
+            kwargs["prefetch_factor"] = prefetch_factor
+        persistent_workers = getattr(loader, "persistent_workers", False)
+        if loader.num_workers > 0:
+            kwargs["persistent_workers"] = persistent_workers
+        pin_memory_device = getattr(loader, "pin_memory_device", "")
+        if pin_memory_device:
+            kwargs["pin_memory_device"] = pin_memory_device
+        if hasattr(loader, "in_order"):
+            kwargs["in_order"] = loader.in_order
+        return kwargs
+
+    def _distributed_loader_from_dataloader(self, loader, *, shuffle, epoch):
+        sampler = DistributedSampler(
+            loader.dataset,
+            num_replicas=self.distributed.world_size,
+            rank=self.distributed.rank,
+            shuffle=shuffle,
+            drop_last=loader.drop_last,
+        )
+        sampler.set_epoch(epoch)
+        kwargs = self._loader_kwargs_from_dataloader(loader)
+        kwargs["sampler"] = sampler
+        return DataLoader(loader.dataset, **kwargs)
+
     def _as_dataloader(self, dataset_or_loader, *, shuffle, loader_args, epoch):
         if isinstance(dataset_or_loader, DataLoader):
             if self.distributed.enabled:
                 sampler = dataset_or_loader.sampler
-                if not isinstance(sampler, DistributedSampler):
-                    raise RuntimeError(
-                        "Distributed training requires prebuilt dataloaders to use DistributedSampler."
-                    )
-                sampler.set_epoch(epoch)
+                if isinstance(sampler, DistributedSampler):
+                    sampler.set_epoch(epoch)
+                    return dataset_or_loader
+                return self._distributed_loader_from_dataloader(
+                    dataset_or_loader,
+                    shuffle=shuffle,
+                    epoch=epoch,
+                )
             return dataset_or_loader
         resolved_loader_args = dict(loader_args or {})
         if self.distributed.enabled:
