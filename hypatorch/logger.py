@@ -3,6 +3,7 @@ from pathlib import Path
 
 import torch
 
+
 class DataLogger(ABC):
 
     def __init__(self, log_every_n_steps:int=1):
@@ -248,3 +249,60 @@ class MLflowLogger(DataLogger):
 
     def finalize(self, status: str):
         self._mlflow.end_run(status=status)
+
+
+class DistributedLogger:
+    def __init__(self, logger, runtime):
+        self._logger = logger
+        self._runtime = runtime
+        self.log_every_n_steps = getattr(logger, "log_every_n_steps", 1)
+
+    def _forward_only_on_rank_zero(self, method_name: str, *args, **kwargs):
+        if not self._runtime.is_rank_zero:
+            return None
+        method = getattr(self._logger, method_name)
+        return method(*args, **kwargs)
+
+    @staticmethod
+    def _is_counter_key(name: str) -> bool:
+        return name == "global_step" or name.endswith("_step") or name.endswith("_epoch")
+
+    def log_value(self, name: str, value: float | int):
+        if self._is_counter_key(name):
+            return self._forward_only_on_rank_zero("log_value", name, value)
+        if isinstance(value, torch.Tensor):
+            value = value.item()
+        if isinstance(value, (int, float)):
+            value = self._runtime.reduce_mean_scalar(value)
+        return self._forward_only_on_rank_zero("log_value", name, value)
+
+    def log_images(self, *args, **kwargs):
+        return self._forward_only_on_rank_zero("log_images", *args, **kwargs)
+
+    def log_text(self, *args, **kwargs):
+        return self._forward_only_on_rank_zero("log_text", *args, **kwargs)
+
+    def log_artifact(self, local_path: str, artifact_path: str | None = None):
+        return self._forward_only_on_rank_zero(
+            "log_artifact",
+            local_path,
+            artifact_path=artifact_path,
+        )
+
+    def finalize(self, status: str):
+        return self._forward_only_on_rank_zero("finalize", status)
+
+    def report_step(self):
+        return self._forward_only_on_rank_zero("report_step")
+
+    def report_epoch(self):
+        return self._forward_only_on_rank_zero("report_epoch")
+
+    def step_done(self):
+        return self._forward_only_on_rank_zero("step_done")
+
+    def epoch_done(self):
+        return self._forward_only_on_rank_zero("epoch_done")
+
+    def __getattr__(self, name):
+        return getattr(self._logger, name)

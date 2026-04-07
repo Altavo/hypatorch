@@ -6,12 +6,21 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from .core import Model
+from .distributed import DistributedRuntime
+from .logger import DistributedLogger
 from .utils import shared_dict, update_output
 
 
 class Trainer:
+    @staticmethod
+    def _normalize_requested_devices(devices):
+        if isinstance(devices, str) and devices.isdigit():
+            return int(devices)
+        return devices
+
     def __init__(
         self,
         max_epochs=None,
@@ -35,12 +44,35 @@ class Trainer:
         save_last=True,
         **kwargs,
     ):
+        distributed_backend = kwargs.pop("_distributed_backend", None)
+        allow_cpu_distributed = bool(kwargs.pop("_allow_cpu_distributed", False))
         del kwargs
 
-        self._validate_execution_config(devices=devices, strategy=strategy)
+        devices = self._normalize_requested_devices(devices)
+        self._validate_execution_config(
+            devices=devices,
+            strategy=strategy,
+            accelerator=accelerator,
+            compile_model=compile_model,
+            allow_cpu_distributed=allow_cpu_distributed,
+        )
+        self.devices = devices
+        self.strategy = strategy
+        self.distributed = DistributedRuntime(
+            devices=devices if isinstance(devices, int) else 1,
+            accelerator=accelerator,
+            strategy=strategy,
+            backend=distributed_backend,
+            allow_cpu=allow_cpu_distributed,
+        )
 
         # Device setup
-        self.device = self._resolve_device(device=device, accelerator=accelerator)
+        self.device = self._resolve_device(
+            device=device,
+            accelerator=accelerator,
+            local_rank=self.distributed.local_rank,
+        )
+        self.distributed.initialize(device_type=self.device.type)
 
         # Computation setup
         self.float32_matmul_precision = float32_matmul_precision
@@ -96,28 +128,39 @@ class Trainer:
         self._last_checkpoint_monotonic = None
         self._signal_handlers = {}
 
-    def _validate_execution_config(self, devices=1, strategy=None):
+    def _validate_execution_config(
+        self,
+        devices=1,
+        strategy=None,
+        accelerator=None,
+        compile_model=False,
+        allow_cpu_distributed=False,
+    ):
         if isinstance(devices, (list, tuple)):
             if len(devices) > 1:
+                raise NotImplementedError("List-style device selection is not supported.")
+
+        if isinstance(devices, int) and devices > 1:
+            if accelerator != "gpu" and not allow_cpu_distributed:
                 raise NotImplementedError(
-                    "hypatorch currently supports only a single device."
+                    "Multi-device training currently requires accelerator='gpu'."
                 )
-        elif isinstance(devices, str):
-            if devices.isdigit() and int(devices) > 1:
+            if strategy not in (None, "auto", "ddp"):
                 raise NotImplementedError(
-                    "hypatorch currently supports only a single device."
+                    "Multi-device training currently supports only strategy=None, 'auto', or 'ddp'."
                 )
-        elif isinstance(devices, int) and devices > 1:
-            raise NotImplementedError(
-                "hypatorch currently supports only a single device."
-            )
+            if compile_model:
+                raise NotImplementedError(
+                    "compile_model is not supported with distributed training."
+                )
+            return
 
         if strategy not in (None, "auto", "single_device"):
             raise NotImplementedError(
                 "Distributed strategies are not supported in hypatorch."
             )
 
-    def _resolve_device(self, device=None, accelerator=None):
+    def _resolve_device(self, device=None, accelerator=None, local_rank=0):
         if isinstance(device, torch.device):
             return device
 
@@ -134,7 +177,8 @@ class Trainer:
         if accelerator == "gpu":
             if not torch.cuda.is_available():
                 raise RuntimeError("Requested accelerator='gpu' but CUDA is not available.")
-            return torch.device("cuda")
+            torch.cuda.set_device(local_rank)
+            return torch.device("cuda", local_rank)
 
         if accelerator == "mps":
             if not getattr(torch.backends, "mps", None) or not torch.backends.mps.is_available():
@@ -174,7 +218,16 @@ class Trainer:
 
     def _stateful_model(self, model):
         candidate = getattr(model, "_orig_mod", model)
+        if candidate.__class__.__name__ == "DistributedDataParallel":
+            candidate = candidate.module
         return candidate
+
+    def _wrap_logger(self, logger):
+        if logger is None or not self.distributed.enabled:
+            return logger
+        if isinstance(logger, DistributedLogger):
+            return logger
+        return DistributedLogger(logger, self.distributed)
 
     def _reset_steps(self):
         self.global_step = 0
@@ -419,7 +472,8 @@ class Trainer:
         if not self.optimizers:
             return
 
-        for operation_name in self.model.operations.keys():
+        state_model = self._stateful_model(self.model)
+        for operation_name in state_model.operations.keys():
             optimizer = self.optimizers[operation_name]
             has_grad = any(
                 param.grad is not None for group in optimizer.param_groups for param in group["params"]
@@ -444,6 +498,8 @@ class Trainer:
         )
 
     def _save_periodic_checkpoint(self, logger=None, checkpoint_path=None):
+        if self.distributed.enabled and not self.distributed.is_rank_zero:
+            return
         checkpoint_file = self.save_checkpoint(
             self._periodic_checkpoint_name(),
             self.model,
@@ -468,6 +524,8 @@ class Trainer:
 
     def _finalize_last_checkpoint(self, logger=None, checkpoint_path=None):
         if not self.save_last:
+            return None
+        if self.distributed.enabled and not self.distributed.is_rank_zero:
             return None
 
         checkpoint_file = self.save_checkpoint(
@@ -528,8 +586,9 @@ class Trainer:
         input_dict = self._input_to_device(input_dict)
         output_dict = {}
         metrics = {}
+        state_model = self._stateful_model(model)
 
-        for operation_name in model.operations.keys():
+        for operation_name in state_model.operations.keys():
             with self._forward_context(mode):
                 operation_output = model(
                     input_dict=shared_dict(input_dict, output_dict),
@@ -543,7 +602,7 @@ class Trainer:
                     operation_name,
                 )
 
-                loss = model.compute_loss(
+                loss = state_model.compute_loss(
                     x=shared_dict(input_dict, output_dict),
                     operation_name=operation_name,
                     mode=mode,
@@ -563,7 +622,7 @@ class Trainer:
                     gradient_clipping=gradient_clipping,
                 )
 
-            metrics = model.compute_metrics(
+            metrics = state_model.compute_metrics(
                 x=shared_dict(input_dict, output_dict),
                 operation_name=operation_name,
                 mode=mode,
@@ -587,7 +646,8 @@ class Trainer:
         logger=None,
         checkpoint_path=None,
     ):
-        operations = model.operations.keys()
+        state_model = self._stateful_model(model)
+        operations = state_model.operations.keys()
 
         if optimizers:
             for operation_name in operations:
@@ -613,7 +673,7 @@ class Trainer:
             del metrics, step
 
             if logger and epoch_step == 0 and mode == "val":
-                model.log_data(
+                state_model.log_data(
                     data_dict=shared_dict(input_dict, output_dict),
                     step=global_step,
                     logger=logger,
@@ -659,15 +719,39 @@ class Trainer:
         )
 
         self.state_model = model
-        self.model = torch.compile(model) if self.compile_model else model
+        prepared_model = torch.compile(model) if self.compile_model else model
+        self.model = self.distributed.wrap_model(prepared_model)
 
-    def _as_dataloader(self, dataset_or_loader, *, shuffle, loader_args):
+    def _as_dataloader(self, dataset_or_loader, *, shuffle, loader_args, epoch):
         if isinstance(dataset_or_loader, DataLoader):
+            if self.distributed.enabled:
+                sampler = dataset_or_loader.sampler
+                if not isinstance(sampler, DistributedSampler):
+                    raise RuntimeError(
+                        "Distributed training requires prebuilt dataloaders to use DistributedSampler."
+                    )
+                sampler.set_epoch(epoch)
             return dataset_or_loader
+        resolved_loader_args = dict(loader_args or {})
+        if self.distributed.enabled:
+            if resolved_loader_args.get("sampler") is not None:
+                raise RuntimeError(
+                    "Distributed training does not support explicit loader_args['sampler']."
+                )
+            sampler = DistributedSampler(
+                dataset_or_loader,
+                num_replicas=self.distributed.world_size,
+                rank=self.distributed.rank,
+                shuffle=shuffle,
+                drop_last=bool(resolved_loader_args.get("drop_last", False)),
+            )
+            sampler.set_epoch(epoch)
+            resolved_loader_args["sampler"] = sampler
+            shuffle = False
         return DataLoader(
             dataset_or_loader,
             shuffle=shuffle,
-            **(loader_args or {}),
+            **resolved_loader_args,
         )
 
     def _training_loop(
@@ -694,6 +778,7 @@ class Trainer:
                         val_dataset,
                         shuffle=False,
                         loader_args=loader_args,
+                        epoch=current_epoch,
                     )
                     self.epoch(
                         mode="val",
@@ -712,6 +797,7 @@ class Trainer:
                     train_dataset,
                     shuffle=True,
                     loader_args=loader_args,
+                    epoch=current_epoch,
                 )
                 self.epoch(
                     mode="train",
@@ -728,6 +814,7 @@ class Trainer:
                 self.epoch_idx = current_epoch + 1
 
         self._finalize_last_checkpoint(logger=logger, checkpoint_path=checkpoint_path)
+        self.distributed.barrier()
         self.rng_state_dict = self.get_rng_state_dict()
 
     def train(
@@ -742,6 +829,7 @@ class Trainer:
         self._reset_random_seed()
         self._reset_steps()
         self._prepare_model_training(model)
+        logger = self._wrap_logger(logger or self.logger)
         self._training_loop(
             train_dataset=train_dataset,
             loader_args=loader_args,
@@ -774,6 +862,7 @@ class Trainer:
             strict=strict,
             set_rng_state=True,
         )
+        logger = self._wrap_logger(logger or self.logger)
         self._training_loop(
             train_dataset=train_dataset,
             loader_args=loader_args,
@@ -799,6 +888,7 @@ class Trainer:
         self._stop_reason = None
         self.last_checkpoint_path = None
         self.set_rng_state_dict(self.rng_state_dict)
+        logger = self._wrap_logger(logger or self.logger)
         self._training_loop(
             train_dataset=train_dataset,
             loader_args=loader_args,
