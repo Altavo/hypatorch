@@ -5,7 +5,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 
 from .core import Model
@@ -764,6 +764,8 @@ class Trainer:
     def _as_dataloader(self, dataset_or_loader, *, shuffle, loader_args, epoch):
         if isinstance(dataset_or_loader, DataLoader):
             if self.distributed.enabled:
+                if isinstance(dataset_or_loader.dataset, IterableDataset):
+                    return dataset_or_loader
                 sampler = dataset_or_loader.sampler
                 if isinstance(sampler, DistributedSampler):
                     sampler.set_epoch(epoch)
@@ -775,7 +777,18 @@ class Trainer:
                 )
             return dataset_or_loader
         resolved_loader_args = dict(loader_args or {})
+        is_iterable_dataset = isinstance(dataset_or_loader, IterableDataset)
         if self.distributed.enabled:
+            if is_iterable_dataset:
+                if resolved_loader_args.get("sampler") is not None:
+                    raise RuntimeError(
+                        "Distributed iterable datasets do not support explicit loader_args['sampler']."
+                    )
+                return DataLoader(
+                    dataset_or_loader,
+                    shuffle=False,
+                    **resolved_loader_args,
+                )
             if resolved_loader_args.get("sampler") is not None:
                 raise RuntimeError(
                     "Distributed training does not support explicit loader_args['sampler']."

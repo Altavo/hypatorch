@@ -10,7 +10,7 @@ import pytest
 import torch
 from hydra import compose, initialize
 from hydra.utils import instantiate
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 
 import hypatorch
@@ -31,6 +31,12 @@ class TestDataset(torch.utils.data.Dataset):
             "image": torch.ones(1, 28, 28) * idx,
             "class": idx % 10,
         }
+
+
+class TestIterableDataset(IterableDataset):
+    def __iter__(self):
+        for idx in range(8):
+            yield {"image": torch.ones(1, 28, 28) * idx, "class": idx % 10}
 
 
 def _free_port() -> int:
@@ -268,6 +274,17 @@ def test_as_dataloader_rebuilds_prebuilt_loader_with_distributed_sampler():
     assert rebuilt.sampler.epoch == 2
     assert rebuilt.batch_size == 4
     assert rebuilt.collate_fn is collate_fn
+
+
+def test_as_dataloader_keeps_iterable_loader_without_distributed_sampler():
+    trainer = hypatorch.Trainer.__new__(hypatorch.Trainer)
+    trainer.distributed = SimpleNamespace(enabled=True, world_size=2, rank=0)
+    loader = DataLoader(TestIterableDataset(), batch_size=4)
+
+    rebuilt = trainer._as_dataloader(loader, shuffle=True, loader_args=None, epoch=2)
+
+    assert rebuilt is loader
+    assert not isinstance(rebuilt.sampler, DistributedSampler)
 
 
 def test_ddp_checkpoint_loads_in_single_process(tmp_path):
