@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -67,6 +68,8 @@ class DistributedRuntime:
         strategy: str | None = None,
         backend: str | None = None,
         allow_cpu: bool = False,
+        ddp_find_unused_parameters: bool = False,
+        ddp_broadcast_buffers: bool = True,
         env: Mapping[str, str] | None = None,
     ) -> None:
         self.devices = devices
@@ -74,6 +77,8 @@ class DistributedRuntime:
         self.strategy = strategy
         self.backend = backend
         self.allow_cpu = allow_cpu
+        self.ddp_find_unused_parameters = ddp_find_unused_parameters
+        self.ddp_broadcast_buffers = ddp_broadcast_buffers
         self.environment = detect_distributed_environment(env)
         self.rank = self.environment.rank if self.environment is not None else 0
         self.world_size = (
@@ -144,8 +149,34 @@ class DistributedRuntime:
                 model,
                 device_ids=[self.local_rank],
                 output_device=self.local_rank,
+                find_unused_parameters=self.ddp_find_unused_parameters,
+                broadcast_buffers=self.ddp_broadcast_buffers,
             )
-        return DistributedDataParallel(model)
+        return DistributedDataParallel(
+            model,
+            find_unused_parameters=self.ddp_find_unused_parameters,
+            broadcast_buffers=self.ddp_broadcast_buffers,
+        )
+
+    def join_context(
+        self,
+        model: torch.nn.Module,
+        *,
+        enable: bool = True,
+        throw_on_early_termination: bool = False,
+    ):
+        if not self.enabled or not enable:
+            return nullcontext()
+
+        join = getattr(model, "join", None)
+        if join is None:
+            return nullcontext()
+
+        return join(
+            divide_by_initial_world_size=True,
+            enable=True,
+            throw_on_early_termination=throw_on_early_termination,
+        )
 
     def barrier(self) -> None:
         if self.enabled and dist.is_initialized():

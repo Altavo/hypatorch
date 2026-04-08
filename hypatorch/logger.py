@@ -268,12 +268,8 @@ class DistributedLogger:
         return name == "global_step" or name.endswith("_step") or name.endswith("_epoch")
 
     def log_value(self, name: str, value: float | int):
-        if self._is_counter_key(name):
-            return self._forward_only_on_rank_zero("log_value", name, value)
         if isinstance(value, torch.Tensor):
             value = value.item()
-        if isinstance(value, (int, float)):
-            value = self._runtime.reduce_mean_scalar(value)
         return self._forward_only_on_rank_zero("log_value", name, value)
 
     def log_images(self, *args, **kwargs):

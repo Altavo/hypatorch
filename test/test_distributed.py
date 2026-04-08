@@ -15,6 +15,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 import hypatorch
 from hypatorch.distributed import DistributedRuntime
+from hypatorch.logger import ConsoleLogger
 
 from shared import add_path
 
@@ -36,6 +37,14 @@ class TestDataset(torch.utils.data.Dataset):
 class TestIterableDataset(IterableDataset):
     def __iter__(self):
         for idx in range(8):
+            yield {"image": torch.ones(1, 28, 28) * idx, "class": idx % 10}
+
+
+class UnevenRankIterableDataset(IterableDataset):
+    def __iter__(self):
+        rank = int(os.environ.get("RANK", "0"))
+        size = 12 if rank == 0 else 8
+        for idx in range(size):
             yield {"image": torch.ones(1, 28, 28) * idx, "class": idx % 10}
 
 
@@ -137,6 +146,7 @@ def _ddp_train_worker(rank: int, port: int, checkpoint_dir: str) -> None:
                 _distributed_backend="gloo",
             )
             model = instantiate(cfg.model)
+            model.register_buffer("sync_buffer", torch.zeros(1))
             trainer.train(
                 model=model,
                 train_dataset=dataset,
@@ -173,6 +183,45 @@ def _ddp_resume_worker(rank: int, port: int, checkpoint_dir: str) -> None:
                 loader_args={"batch_size": 8},
                 checkpoint_path=checkpoint_dir,
                 strict=True,
+            )
+            trainer.distributed.cleanup()
+    finally:
+        _restore_env(previous)
+
+
+def _ddp_uneven_iterable_worker(rank: int, port: int, output_dir: str) -> None:
+    previous = _set_dist_env(rank, 2, port)
+    try:
+        training_path, cfg = _compose_example_model()
+        dataset = UnevenRankIterableDataset()
+        with add_path(training_path):
+            trainer = hypatorch.Trainer(
+                max_epochs=1,
+                accelerator="cpu",
+                devices=2,
+                strategy="ddp",
+                save_last=False,
+                logger=ConsoleLogger(log_every_n_steps=1),
+                _allow_cpu_distributed=True,
+                _distributed_backend="gloo",
+            )
+            model = instantiate(cfg.model)
+            model.register_buffer("sync_buffer", torch.zeros(1))
+            trainer.train(
+                model=model,
+                train_dataset=dataset,
+                val_dataset=dataset,
+                loader_args={"batch_size": 4, "drop_last": True},
+            )
+            Path(output_dir, f"uneven-rank-{rank}.json").write_text(
+                json.dumps(
+                    {
+                        "rank": rank,
+                        "epoch_idx": trainer.epoch_idx,
+                        "global_step": trainer.global_step,
+                    }
+                ),
+                encoding="utf-8",
             )
             trainer.distributed.cleanup()
     finally:
@@ -330,3 +379,14 @@ def test_single_process_checkpoint_resumes_in_ddp(tmp_path):
     port = _free_port()
     _run_processes(_ddp_resume_worker, port=port, checkpoint_dir=checkpoint_dir)
     assert (tmp_path / "last.ckpt").exists()
+
+
+def test_ddp_handles_uneven_iterable_inputs(tmp_path):
+    port = _free_port()
+    _run_processes(_ddp_uneven_iterable_worker, port=port, output_dir=str(tmp_path))
+
+    payloads = [
+        json.loads((tmp_path / f"uneven-rank-{rank}.json").read_text(encoding="utf-8"))
+        for rank in range(2)
+    ]
+    assert [payload["epoch_idx"] for payload in payloads] == [1, 1]

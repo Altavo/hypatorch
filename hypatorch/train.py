@@ -34,6 +34,8 @@ class Trainer:
         seed=1234,
         float32_matmul_precision="high",
         compile_model=False,
+        ddp_find_unused_parameters=False,
+        ddp_broadcast_buffers=True,
         autocast_dtype=None,
         grad_accum_steps=1,
         max_samples=None,
@@ -64,6 +66,8 @@ class Trainer:
             strategy=strategy,
             backend=distributed_backend,
             allow_cpu=allow_cpu_distributed,
+            ddp_find_unused_parameters=ddp_find_unused_parameters,
+            ddp_broadcast_buffers=ddp_broadcast_buffers,
         )
 
         # Device setup
@@ -656,43 +660,41 @@ class Trainer:
         if logger:
             logger.log_value(f"{mode}_epoch", epoch)
 
-        num_batches = self._safe_len(dataset)
-
-        for epoch_step, input_dict in enumerate(dataset):
-            batch_size = self._infer_batch_size(input_dict) if mode == "train" else 0
-            output_dict, metrics, step, global_step = self.step(
-                mode=mode,
-                model=model,
-                input_dict=input_dict,
-                optimizers=optimizers,
-                schedulers=schedulers,
-                gradient_clipping=gradient_clipping,
-                logger=logger,
-                epoch_step=epoch_step,
-            )
-            del metrics, step
-
-            if logger and epoch_step == 0 and mode == "val":
-                state_model.log_data(
-                    data_dict=shared_dict(input_dict, output_dict),
-                    step=global_step,
+        with self.distributed.join_context(model, enable=mode == "train"):
+            for epoch_step, input_dict in enumerate(dataset):
+                batch_size = self._infer_batch_size(input_dict) if mode == "train" else 0
+                output_dict, metrics, step, global_step = self.step(
+                    mode=mode,
+                    model=model,
+                    input_dict=input_dict,
+                    optimizers=optimizers,
+                    schedulers=schedulers,
+                    gradient_clipping=gradient_clipping,
                     logger=logger,
+                    epoch_step=epoch_step,
                 )
+                del metrics, step
 
-            if mode == "train":
-                self.train_samples += batch_size
-                self._maybe_request_stop_for_samples()
-                self._maybe_save_periodic_checkpoint(
-                    logger=logger,
-                    checkpoint_path=checkpoint_path,
-                )
+                if logger and epoch_step == 0 and mode == "val":
+                    state_model.log_data(
+                        data_dict=shared_dict(input_dict, output_dict),
+                        step=global_step,
+                        logger=logger,
+                    )
 
-            is_last_batch = num_batches is not None and (epoch_step + 1) >= num_batches
-            if mode == "train" and optimizers and is_last_batch:
+                if mode == "train":
+                    self.train_samples += batch_size
+                    self._maybe_request_stop_for_samples()
+                    self._maybe_save_periodic_checkpoint(
+                        logger=logger,
+                        checkpoint_path=checkpoint_path,
+                    )
+
+                if self.should_stop:
+                    break
+
+            if mode == "train" and optimizers:
                 self._flush_pending_gradients()
-
-            if self.should_stop:
-                break
 
         for operation_name in operations:
             if schedulers and operation_name in schedulers:
@@ -703,6 +705,10 @@ class Trainer:
 
     @staticmethod
     def _safe_len(dataset):
+        if isinstance(dataset, DataLoader) and isinstance(dataset.dataset, IterableDataset):
+            return None
+        if isinstance(dataset, IterableDataset):
+            return None
         if not hasattr(dataset, "__len__"):
             return None
         try:
@@ -828,21 +834,27 @@ class Trainer:
                 current_epoch = self.epoch_idx
 
                 if val_dataset is not None:
-                    self.model.eval()
-                    val_loader = self._as_dataloader(
-                        val_dataset,
-                        shuffle=False,
-                        loader_args=loader_args,
-                        epoch=current_epoch,
-                    )
-                    self.epoch(
-                        mode="val",
-                        model=self.model,
-                        epoch=current_epoch,
-                        dataset=val_loader,
-                        logger=logger,
-                        checkpoint_path=checkpoint_path,
-                    )
+                    if not self.distributed.enabled or self.distributed.is_rank_zero:
+                        self.model.eval()
+                        validation_model = (
+                            self.state_model if self.distributed.enabled else self.model
+                        )
+                        val_loader = self._as_dataloader(
+                            val_dataset,
+                            shuffle=False,
+                            loader_args=loader_args,
+                            epoch=current_epoch,
+                        )
+                        self.epoch(
+                            mode="val",
+                            model=validation_model,
+                            epoch=current_epoch,
+                            dataset=val_loader,
+                            logger=logger,
+                            checkpoint_path=checkpoint_path,
+                        )
+                    if self.distributed.enabled:
+                        self.distributed.barrier()
 
                 if self.should_stop:
                     break
