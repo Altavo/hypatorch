@@ -325,15 +325,30 @@ def test_as_dataloader_rebuilds_prebuilt_loader_with_distributed_sampler():
     assert rebuilt.collate_fn is collate_fn
 
 
-def test_as_dataloader_keeps_iterable_loader_without_distributed_sampler():
+def test_as_dataloader_rebuilds_iterable_loader_without_distributed_sampler():
     trainer = hypatorch.Trainer.__new__(hypatorch.Trainer)
     trainer.distributed = SimpleNamespace(enabled=True, world_size=2, rank=0)
     loader = DataLoader(TestIterableDataset(), batch_size=4)
 
     rebuilt = trainer._as_dataloader(loader, shuffle=True, loader_args=None, epoch=2)
 
-    assert rebuilt is loader
+    assert rebuilt is not loader
     assert not isinstance(rebuilt.sampler, DistributedSampler)
+
+
+def test_as_dataloader_rebuilds_iterable_loader_each_epoch_in_single_process():
+    trainer = hypatorch.Trainer.__new__(hypatorch.Trainer)
+    trainer.distributed = SimpleNamespace(enabled=False)
+    loader = DataLoader(TestIterableDataset(), batch_size=4, num_workers=0)
+
+    first = trainer._as_dataloader(loader, shuffle=True, loader_args=None, epoch=0)
+    second = trainer._as_dataloader(loader, shuffle=True, loader_args=None, epoch=1)
+
+    assert first is not loader
+    assert second is not loader
+    assert first is not second
+    assert len(list(first)) == 2
+    assert len(list(second)) == 2
 
 
 def test_ddp_checkpoint_loads_in_single_process(tmp_path):

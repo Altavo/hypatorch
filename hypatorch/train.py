@@ -754,6 +754,14 @@ class Trainer:
             kwargs["in_order"] = loader.in_order
         return kwargs
 
+    def _iterable_loader_from_dataloader(self, loader):
+        kwargs = self._loader_kwargs_from_dataloader(loader)
+        return DataLoader(
+            loader.dataset,
+            shuffle=False,
+            **kwargs,
+        )
+
     def _distributed_loader_from_dataloader(self, loader, *, shuffle, epoch):
         sampler = DistributedSampler(
             loader.dataset,
@@ -769,9 +777,9 @@ class Trainer:
 
     def _as_dataloader(self, dataset_or_loader, *, shuffle, loader_args, epoch):
         if isinstance(dataset_or_loader, DataLoader):
+            if isinstance(dataset_or_loader.dataset, IterableDataset):
+                return self._iterable_loader_from_dataloader(dataset_or_loader)
             if self.distributed.enabled:
-                if isinstance(dataset_or_loader.dataset, IterableDataset):
-                    return dataset_or_loader
                 sampler = dataset_or_loader.sampler
                 if isinstance(sampler, DistributedSampler):
                     sampler.set_epoch(epoch)
