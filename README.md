@@ -11,5 +11,5 @@ This python package provides a flexible and comprehensive framework for creating
 ## Installation
 
 ```bash
-pip install hypatorch
+uv add hypatorch
 ```
