@@ -1,6 +1,6 @@
 import os
 import torch
-import lightning as L
+from copy import deepcopy
 from contextlib import nullcontext
 from omegaconf import DictConfig, ListConfig
 from hydra import compose, initialize
@@ -19,8 +19,53 @@ from .utils import validate_io_keys
 from .utils import get_module_input
 
 
+class Scheduler:
 
-class Model( L.LightningModule ):
+    def __init__(
+            self,
+            scheduler,
+            frequency=1,
+            interval='epoch'
+            ):
+        self.scheduler = scheduler
+        self.frequency = frequency
+        self.interval = interval
+
+        self.steps_since_update = 0
+        self.epochs_since_update = 0
+
+    def state_dict(self):
+        return {
+            'scheduler': self.scheduler.state_dict(),
+            'steps_since_update': self.steps_since_update,
+            'epochs_since_update': self.epochs_since_update,
+        }
+
+    def load_state_dict(self, state_dict):
+        self.scheduler.load_state_dict(state_dict['scheduler'])
+        self.steps_since_update = state_dict.get('steps_since_update', 0)
+        self.epochs_since_update = state_dict.get('epochs_since_update', 0)
+
+    def step_done(self):
+        if self.interval != 'step':
+            return
+        
+        self.steps_since_update += 1
+        if self.steps_since_update >= self.frequency:
+            self.scheduler.step()
+            self.steps_since_update = 0
+
+    def epoch_done(self):
+        if self.interval != 'epoch':
+            return
+        
+        self.epochs_since_update += 1
+        if self.epochs_since_update >= self.frequency:
+            self.scheduler.step()
+            self.epochs_since_update = 0
+
+
+class Model( torch.nn.Module ):
     def __init__(
             self,
             # core functionality
@@ -33,8 +78,6 @@ class Model( L.LightningModule ):
             # training related
             submodules_eval: Optional[ List[str] ] = None,
             exclude_from_checkpoint: Optional[ List[str] ] = None,
-            accumulate_grad_batches: Optional[ int ] = None,
-            gradient_clip_val: Optional[ float ] = 5.0,
             checkpoints: Optional[ List[ Dict[ str, str ] ] ] = None,
             ):
         
@@ -80,13 +123,6 @@ class Model( L.LightningModule ):
         self.metrics = self._get_content( 'metrics' )
 
 
-        # Lightning does not accept gradient accumulation or clipping
-        # as arguments if optimization is manual. Therefore, we need to
-        # implement these functionalities manually.
-        self.accumulate_grad_batches = accumulate_grad_batches
-        self.gradient_clip_val = gradient_clip_val
-
-
         # Checkpoints
         self.checkpoints = checkpoints if checkpoints is not None else []
 
@@ -125,9 +161,6 @@ class Model( L.LightningModule ):
             submodules_eval = []
         self.submodules_eval = submodules_eval
 
-        # Important: This property activates manual optimization.
-        self.automatic_optimization = False
-
         return
     
     @classmethod
@@ -154,8 +187,12 @@ class Model( L.LightningModule ):
         
         return model
     
-    def _load_checkpoints( self ):
-        for ckpt_dict in self.checkpoints:
+    def _load_checkpoints(
+            self,
+            checkpoints_dict = None,
+            ):
+        checkpoints = self.checkpoints if checkpoints_dict is None else checkpoints_dict
+        for ckpt_dict in checkpoints:
 
             ckpt =torch.load( ckpt_dict[ 'path' ] )[ 'state_dict' ]
             if 'prefix_rm' in ckpt_dict:
@@ -266,35 +303,39 @@ class Model( L.LightningModule ):
         return
     
     def configure_optimizers(self):
+        optimizers = {}
+        schedulers = {}
 
-        optimizers = []
+        gradient_clipping = {}
 
         for op_name, opt in self.operations.items():
-            # List of parameters to optimize
+            # List of parameters to optimize for this operation
             parameters = self._collect_trainable_parameters(
                 submodule_names = opt[ 'optimize_submodules' ],
             )
 
             optimizer = opt[ 'optimizer' ](parameters)
 
+            optimizers[op_name] = optimizer
 
-            d = {'optimizer': optimizer}
-            if opt[ 'lr_scheduler' ] is not None:
+            if 'lr_scheduler' in opt and opt[ 'lr_scheduler' ] is not None:
                 # Instantiate the partially instantiated LR scheduler
-                sch = {
-                    'scheduler': opt[ 'lr_scheduler' ]['scheduler'](optimizer),
-                }
+                scheduler_cfg = deepcopy(opt[ 'lr_scheduler' ])
+                scheduler_factory = scheduler_cfg.pop( 'scheduler' )
+                scheduler = scheduler_factory(optimizer)
 
-                # add the other keys to the dict
-                for k, v in opt[ 'lr_scheduler' ].items():
-                    if k != 'scheduler':
-                        sch[k] = v
+                # Wrap the scheduler in the hypatorch scheduler to handle the frequency and interval
+                schedulers[op_name] = Scheduler(
+                    scheduler = scheduler,
+                    **scheduler_cfg,
+                )
 
-                d['lr_scheduler'] = sch
-            
-            optimizers.append( d )
+            if 'gradient_clipping' in opt and opt[ 'gradient_clipping' ] is not None:
+                def gradient_clipping_fn(opt, parameters):
+                    return lambda: opt['gradient_clipping'](parameters)
+                gradient_clipping[op_name] = gradient_clipping_fn(opt, parameters)
 
-        return optimizers
+        return optimizers, schedulers, gradient_clipping
 
     def _run_submodule(
             self,
@@ -302,11 +343,12 @@ class Model( L.LightningModule ):
             submodule_name,
             mapping,
             data_dict,
+            mode
             ):
         
         frozen = submodule_name in self.frozen
         calculate_grad = mapping[ submodule_name ][ 'calculate_grad' ]
-        if not calculate_grad or ( frozen and not calculate_grad ):
+        if not calculate_grad or ( frozen and not calculate_grad ) or mode != 'train':
             context = torch.no_grad()
         else:
             context = nullcontext()
@@ -322,7 +364,7 @@ class Model( L.LightningModule ):
             inputs = mapping[ submodule_name][ 'inputs' ]
 
             expected_inputs = get_input_variable_names( fn_to_inspect )
-            expected_outputs = get_output_variable_names( fn_to_inspect )
+            expected_outputs = list(output_key_map.keys())
 
             validate_io_keys(
                 module_name = submodule_name,
@@ -378,13 +420,13 @@ class Model( L.LightningModule ):
     def forward(
             self,
             input_dict,
-            mappings,
+            operation_name,
             mode,
             ):
 
         output_dict = {}
 
-        for mapping in mappings:
+        for mapping in self.mappings[ operation_name ]:
             for submodule_name in mapping.keys():
                 submodule = getattr(self, submodule_name)
                 if submodule is not None:
@@ -402,6 +444,7 @@ class Model( L.LightningModule ):
                             submodule_name = submodule_name,
                             mapping = mapping,
                             data_dict = data_dict,
+                            mode=mode,
                         )
                         # check that x.keys do not overlap with output_dict.keys
                         if not any( x in output_dict.keys() for x in x.keys() ):
@@ -424,112 +467,37 @@ class Model( L.LightningModule ):
 
         return output_dict
     
+    def train(self, mode=True):
+        super().train(mode)
+        if mode:
+            for submodule_name in self.submodules_eval:
+                getattr(self, submodule_name).eval()
+        return self
 
-    def get_optimizers(self) -> dict:
-        """ Repack the optimizers into a dictionary with the operation names as keys. """
-
-        opts = self.optimizers()
-        if not isinstance( opts, list ):
-            opts = [ opts ]
-
-        return { op: opt for op, opt in zip( self.operations.keys(), opts )}
-
-
-    def get_lr_schedulers(self) -> dict:
-        """ lr_schedulers() alternative method from LightningModule to return the full config, not just the scheduler. """
-
-        if not self.trainer.lr_scheduler_configs:
-            return None
-
-        return { op: config for op, config in zip( self.operations.keys(), self.trainer.lr_scheduler_configs ) }
     
-
-    def lr_scheduler_step(self,
-                          lr_scheduler_config,
-                          ):
-        
-        if lr_scheduler_config is None:
-            return
-        
-        if lr_scheduler_config.monitor is not None:
-            raise NotImplementedError(
-                f"""
-                Scheduling currently does not work with monitored metrics.
-                @TODO: Implement this feature.
-                """
-                )
-
-        # Note: if not specified, interval defaults to 'epoch' and frequency defaults to 1.
-        if lr_scheduler_config.interval == 'step':
-            if self.global_step % lr_scheduler_config.frequency == 0:
-                lr_scheduler_config.scheduler.step()
-        elif lr_scheduler_config.interval == 'epoch':
-            if self.trainer.is_last_batch:
-                if (self.current_epoch + 1) % lr_scheduler_config.frequency == 0:
-                    lr_scheduler_config.scheduler.step()
-        else:
-            raise ValueError(f"Invalid interval {lr_scheduler_config.interval} for lr_scheduler_config.")
-        
-        return
-    
-
-    def training_step(self, batch, batch_idx):
-
-        mode = 'train'
-        
-        input_dict = batch
-        output_dict = {}
-
-        opts = self.get_optimizers()
-        scheds = self.get_lr_schedulers()
-
-        for submodule_name in self.submodules_eval:
-            submodule = getattr(self, submodule_name)
-            submodule.eval()
+    def log_data(self, logger, step, data_dict):
 
         for operation_name in self.operations.keys():
+            if self.logging:
+                loggings = self.logging[ operation_name ]
+                if loggings:
+                    if not isinstance( loggings, list ) and not isinstance( loggings, ListConfig ):
+                        loggings = [ loggings ]
+                    
+                    for log in loggings:
 
-            # Forward Pass
-            operation_out, loss = self._forward_pass(
-                input_dict = shared_dict(
-                    input_dict,
-                    output_dict,
-                    ),
-                operation_name = operation_name,
-                mode = mode,
-                )
-            
-            output_dict = self._handle_operation_output(
-                x = operation_out,
-                output_dict = output_dict,
-                operation_name = operation_name,
-                )
+                        fn_name = log[ 'fn' ]
+                        fn_args = { k: v for k, v in log.items() if k != 'fn' }
 
-            # Backward Pass if operation has a loss.
-            opt = opts[ operation_name ]
-            if self.losses[ operation_name ]:
-                self._backward_pass(
-                    opt = opt,
-                    loss = loss,
-                    batch_idx = batch_idx,
-                    )
-            else:
-                opt.step()
-
-            if scheds is not None:
-                self.lr_scheduler_step( scheds[ operation_name ] )
-            
-            self._handle_assessments(
-                assessments = self.metrics,
-                data_dict = shared_dict(
-                    input_dict,
-                    output_dict,
-                    ),
-                operation_name = operation_name,
-                mode = mode,
-                )
-
-        return loss
+                        log_fn = getattr(
+                            logger,
+                            fn_name,
+                        )
+                        log_fn(
+                            data_dict = data_dict,
+                            global_step = step,
+                            **fn_args,
+                            )        
 
     def validation_step(self, batch, batch_idx):
 
@@ -593,70 +561,40 @@ class Model( L.LightningModule ):
         
         return loss
     
-    def _backward_pass(
-            self,
-            opt,
-            loss,
-            batch_idx,
-            ):
-        if self.accumulate_grad_batches is None:
-            opt.zero_grad()
-            self.manual_backward( loss )
-            #Implement gradient clipping
-            self.clip_gradients(
-                opt,
-                gradient_clip_val = self.gradient_clip_val,
-                gradient_clip_algorithm='value',
-                )
-            opt.step()
-        else:
-            N = self.accumulate_grad_batches
-            loss = loss / N
-            self.manual_backward( loss )
-            # accumulate gradients
-            if ( batch_idx + 1 ) % N == 0:
-                #Implement gradient clipping
-                self.clip_gradients(
-                    opt,
-                    gradient_clip_val = self.gradient_clip_val,
-                    gradient_clip_algorithm='value',
-                    )
-                opt.step()
-                opt.zero_grad()
-        return
-    
-    def _forward_pass(
-            self,
-            input_dict,
-            operation_name,
-            mode,
-            ):
-        output_dict = self(
-            input_dict,
-            self.mappings[ operation_name ],
-            mode = mode,
-            )
+    def compute_loss(self, x, operation_name, mode, logger=None):
         loss_dict = self._handle_assessments(
             assessments = self.losses,
-            data_dict = shared_dict(
-                input_dict,
-                output_dict,
-                ),
+            data_dict = x,
             operation_name = operation_name,
             mode = mode,
+            logger = logger,
             )
+
         if loss_dict:
             loss = sum( loss_dict.values() )
         else:
             loss = None
-        return output_dict, loss
-    
+
+
+        return loss
+        
+    def compute_metrics(self, x, operation_name, mode, logger=None):
+        metric_dict = self._handle_assessments(
+            assessments = self.metrics,
+            data_dict = x,
+            operation_name = operation_name,
+            mode = mode,
+            logger = logger,
+            )
+        return metric_dict
+
     def _handle_assessments(
             self,
             assessments,
             data_dict,
             operation_name,
             mode,
+            logger=None
             ):
         if assessments:
             assessments_dict = self._compute_assessments(
@@ -664,16 +602,11 @@ class Model( L.LightningModule ):
                 assessments = assessments[ operation_name ],
                 mode = mode,
                 )
-            if mode != 'predict':
+            if logger:
                 for k, v in assessments_dict.items():
-                    self.log(
+                    logger.log_value(
                         f'{mode}_{k}',
-                        v,
-                        on_epoch=True,
-                        on_step=True,
-                        prog_bar=True,
-                        logger=True,
-                        #sync_dist=False, #TODO: check if this is necessary
+                        v.item(),
                     )
         else:
             assessments_dict = None
@@ -767,10 +700,30 @@ class Model( L.LightningModule ):
             
         return data_dict
     
-    def on_save_checkpoint(self, checkpoint):
+    def checkpoint_state_dict(self):
+        state_dict = self.state_dict()
+
         for submodule in self.exclude_from_checkpoint:
             keys_to_remove = [
-                k for k in checkpoint['state_dict'].keys() if k.startswith(submodule + '.')
+                k for k in state_dict.keys() if k.startswith(submodule + '.')
                 ]
             for key in keys_to_remove:
-                checkpoint['state_dict'].pop(key, None)
+                state_dict.pop(key, None)
+
+        return state_dict
+
+            
+    def load_checkpoint_state_dict(self, state_dict, strict=True):
+        # Try to load all submoduless that are no in the exclude_from_checkpoint list
+        submodules_with_parameters = set((p.split('.')[0] for p in  self.state_dict().keys()))
+
+        # Remove the submodules that are in the exclude_from_checkpoint list
+        submodules_to_load = submodules_with_parameters - set(self.exclude_from_checkpoint)
+
+        for submodule in submodules_to_load:
+            module_state_dict = {'.'.join(k.split('.')[1:]): v for k, v in state_dict.items() if k.startswith(submodule + '.')}
+            if len(module_state_dict) == 0:
+                raise ValueError(f"Submodule {submodule} not found in the checkpoint.")
+            
+
+            getattr(self, submodule).load_state_dict(module_state_dict, strict=strict)

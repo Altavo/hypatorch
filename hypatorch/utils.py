@@ -82,10 +82,27 @@ def shared_dict(
             'Please use different keys.'
             )
     x = dict( input_dict, **output_dict )
-    #if keys is not None:
-    #    x = { key: x[key] for key in keys }
-    
+   
     return x
+
+def update_output(
+        operation_output,
+        output_dict,
+        operation_name,
+        ):
+    if not any( operation_output in output_dict.keys() for operation_output in operation_output.keys() ):
+        output_dict.update( operation_output )
+    else:
+        raise ValueError(
+            f"""
+            Error with output_dict of {operation_name}.
+            Operations are not allowed to overwrite existing keys.
+            However, {operation_name} has the following keys: {operation_output.keys()}
+            and the output_dict has the following keys: {output_dict.keys()}.
+            """
+            )
+    return output_dict
+        
 
 def validate_io_keys(
         module_name,

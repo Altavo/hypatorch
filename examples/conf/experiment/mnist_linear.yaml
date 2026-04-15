@@ -1,0 +1,8 @@
+# @package _global_
+
+defaults:
+  - /model: linear
+  - /dataset: mnist
+  
+trainer:
+  max_epochs: 2

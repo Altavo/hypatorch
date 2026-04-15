@@ -1,0 +1,2 @@
+_target_: modules.image_encoder.LeNet
+out_features: 10

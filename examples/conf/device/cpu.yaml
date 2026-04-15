@@ -1,0 +1,5 @@
+dataloader:
+  num_workers: 0
+
+trainer:
+  device: cpu

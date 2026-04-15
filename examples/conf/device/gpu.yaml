@@ -1,0 +1,7 @@
+dataloader:
+  pin_memory: True
+  num_workers: 8
+
+trainer:
+  device: cuda
+  

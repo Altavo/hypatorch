@@ -1,0 +1,45 @@
+_target_: hypatorch.Model
+
+defaults:
+  - /submodules/image_encoder: lenet
+  - /submodules/resize: bilinear
+
+submodules_eval:
+
+exclude_from_checkpoint:
+
+
+operations:
+  update_encoder:
+    optimizer:
+      _partial_: true
+      _target_: torch.optim.Adam
+      lr: 0.01
+  
+    optimize_submodules:
+      - image_encoder
+
+    mappings:
+      - resize:
+          inputs: 
+            x: image
+          outputs:
+            x: scaled_image
+          calculate_grad: false
+
+      - image_encoder:
+          inputs: 
+            x: scaled_image
+          outputs:
+            output: logits
+          calculate_grad: true
+    
+    losses:
+        - _target_: hypatorch.HypaAssessment
+          assessment:
+            _target_: torch.nn.CrossEntropyLoss
+            reduction: mean
+          name: mean_cross_entropy
+          inputs:
+            input: logits
+            target: class

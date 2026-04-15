@@ -1,0 +1,7 @@
+dataloader:
+  num_workers: 0
+
+trainer:
+  device: mps
+  autocast_dtype: fp16
+  
