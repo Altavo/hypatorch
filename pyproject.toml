@@ -31,6 +31,9 @@ dependencies = [
 mlflow = [
   "mlflow",
 ]
+wandb = [
+  "wandb",
+]
 
 [dependency-groups]
 build = [
@@ -43,6 +46,7 @@ test = [
 example = [
   "torchvision",
   "mlflow",
+  "wandb",
 ]
 
 [project.urls]

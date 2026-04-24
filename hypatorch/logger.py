@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import html
 from pathlib import Path
 
 import torch
@@ -249,6 +250,203 @@ class MLflowLogger(DataLogger):
 
     def finalize(self, status: str):
         self._mlflow.end_run(status=status)
+
+
+class WandbLogger(DataLogger):
+    def __init__(self, log_every_n_steps: int = 1):
+        super().__init__(log_every_n_steps=log_every_n_steps)
+        try:
+            import wandb
+        except ImportError as exc:
+            raise ImportError(
+                "WandbLogger requires the optional 'wandb' dependency."
+            ) from exc
+        self._wandb = wandb
+        self._run = getattr(wandb, "run", None)
+        if self._run is None:
+            raise RuntimeError(
+                "WandbLogger requires an active wandb run. Call wandb.init() before constructing the logger."
+            )
+
+    def _metric_step(self) -> int:
+        for candidate in ("train_step", "val_step", "global_step"):
+            value = self._step_log.get(candidate)
+            if isinstance(value, int):
+                return value
+        return self._epoch_step
+
+    def report_step(self):
+        metrics = {}
+        for key, value in self.step_items():
+            if isinstance(value, torch.Tensor):
+                value = value.item()
+            if isinstance(value, (int, float)):
+                metrics[key] = value
+
+        if metrics:
+            self._run.log(metrics, step=self._metric_step())
+
+    def report_epoch(self):
+        metrics = {}
+        for key, value in self.epoch_items():
+            if isinstance(value, torch.Tensor):
+                value = value.item()
+            if isinstance(value, (int, float)):
+                metrics[key] = value
+
+        if metrics:
+            self._run.log(metrics, step=self._metric_step())
+
+    def _plot_images(self, data_dict, log_image_keys):
+        import matplotlib.pyplot as plt
+
+        figure, axes = plt.subplots(len(log_image_keys), 1, figsize=(15, 10))
+        if not isinstance(axes, (list, tuple)):
+            try:
+                axes = list(axes)
+            except TypeError:
+                axes = [axes]
+
+        for index, spec in enumerate(log_image_keys):
+            key = spec["key"]
+            len_key = spec.get("len_key")
+            output = data_dict[key][0].float().detach().cpu().squeeze().numpy()
+
+            if len_key is not None:
+                valid_length = data_dict[len_key][0]
+                if len(output.shape) == 1:
+                    output = output[:valid_length]
+                elif len(output.shape) == 2:
+                    output = output[..., :valid_length]
+
+            if len(output.shape) == 1:
+                axes[index].plot(output)
+                axes[index].set_xlim(0, output.shape[0])
+            else:
+                axes[index].imshow(
+                    output,
+                    aspect="auto",
+                    origin="lower",
+                    interpolation="none",
+                )
+            axes[index].set_title(key)
+
+        figure.tight_layout()
+        return figure
+
+    def log_images(self, *args, **kwargs):
+        import matplotlib.pyplot as plt
+
+        if kwargs:
+            data_dict = kwargs["data_dict"]
+            global_step = kwargs["global_step"]
+            log_image_keys = kwargs["log_image_keys"]
+        else:
+            _, data_dict, log_image_keys = args
+            global_step = self._metric_step()
+
+        if not log_image_keys:
+            return
+
+        figure = self._plot_images(data_dict, log_image_keys)
+        self._run.log(
+            {f"images/log_step_{global_step}": self._wandb.Image(figure)},
+            step=global_step,
+        )
+        plt.close(figure)
+
+    def log_text(self, *args, **kwargs):
+        if kwargs:
+            data_dict = kwargs.get("data_dict")
+            global_step = kwargs.get("global_step", self._metric_step())
+            log_text_keys = kwargs.get("log_text_keys")
+        elif len(args) == 2:
+            name, text = args
+            self._run.log(
+                {name: self._wandb.Html(f"<pre>{html.escape(str(text))}</pre>")},
+                step=self._metric_step(),
+            )
+            return
+        else:
+            data_dict = None
+            global_step = self._metric_step()
+            log_text_keys = None
+
+        if not log_text_keys or data_dict is None:
+            return
+
+        text_lines = []
+        for spec in log_text_keys:
+            key = spec["key"]
+            text_lines.append(f"{key}: {data_dict[key][0]}")
+        self._run.log(
+            {
+                f"text/log_step_{global_step}": self._wandb.Html(
+                    f"<pre>{html.escape(chr(10).join(text_lines))}</pre>"
+                )
+            },
+            step=global_step,
+        )
+
+    def _artifact_name(self, local_path: Path, artifact_path: str | None) -> str:
+        normalized_path = (artifact_path or "").strip("/")
+        if normalized_path.startswith("checkpoints") or local_path.suffix == ".ckpt":
+            return f"run-{self._run.id}-checkpoints"
+        root_name = normalized_path.split("/", 1)[0] if normalized_path else "artifacts"
+        return f"run-{self._run.id}-{root_name}"
+
+    def _artifact_type(self, local_path: Path, artifact_path: str | None) -> str:
+        normalized_path = (artifact_path or "").strip("/")
+        if normalized_path.startswith("checkpoints") or local_path.suffix == ".ckpt":
+            return "model"
+        return "artifact"
+
+    def _artifact_entry_name(self, local_path: Path, artifact_path: str | None) -> str:
+        normalized_path = (artifact_path or "").strip("/")
+        if not normalized_path:
+            return local_path.name
+        if normalized_path == "checkpoints" and local_path.is_file():
+            return local_path.name
+        return normalized_path
+
+    def _add_path_to_artifact(
+        self,
+        artifact,
+        local_path: Path,
+        artifact_path: str | None = None,
+    ) -> None:
+        if local_path.is_file():
+            artifact.add_file(
+                str(local_path),
+                name=self._artifact_entry_name(local_path, artifact_path),
+            )
+            return
+
+        if local_path.is_dir():
+            base_name = self._artifact_entry_name(local_path, artifact_path)
+            for child in sorted(local_path.rglob("*")):
+                if not child.is_file():
+                    continue
+                relative_name = child.relative_to(local_path).as_posix()
+                if base_name:
+                    relative_name = f"{base_name}/{relative_name}"
+                artifact.add_file(str(child), name=relative_name)
+            return
+
+        raise FileNotFoundError(f"Artifact path does not exist: {local_path}")
+
+    def log_artifact(self, local_path: str, artifact_path: str | None = None):
+        path = Path(local_path)
+        artifact = self._wandb.Artifact(
+            self._artifact_name(path, artifact_path),
+            type=self._artifact_type(path, artifact_path),
+        )
+        self._add_path_to_artifact(artifact, path, artifact_path=artifact_path)
+        self._run.log_artifact(artifact, aliases=["latest"])
+
+    def finalize(self, status: str):
+        exit_code = 0 if status == "FINISHED" else 1
+        self._run.finish(exit_code=exit_code)
 
 
 class DistributedLogger:
