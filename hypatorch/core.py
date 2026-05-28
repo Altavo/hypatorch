@@ -75,9 +75,17 @@ class Model( L.LightningModule ):
         self.logging = self._get_content( 'logging' )
 
 
-        ## Losses and metrics
-        self.losses = self._get_content( 'losses' )
-        self.metrics = self._get_content( 'metrics' )
+        ## Losses and metrics — stored in ModuleDict/ModuleList so that
+        ## nn.Module.to(device) traverses them and moves stateful metrics (e.g.
+        ## torchmetrics) together with the rest of the model.
+        self.losses = torch.nn.ModuleDict({
+            k: torch.nn.ModuleList(list(v) if v else [])
+            for k, v in self._get_content( 'losses' ).items()
+        })
+        self.metrics = torch.nn.ModuleDict({
+            k: torch.nn.ModuleList(list(v) if v else [])
+            for k, v in self._get_content( 'metrics' ).items()
+        })
 
 
         # Lightning does not accept gradient accumulation or clipping
