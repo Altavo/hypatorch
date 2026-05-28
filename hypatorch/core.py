@@ -241,7 +241,7 @@ class Model( L.LightningModule ):
         x = {}
         
         for fn in assessments:
-            if fn.apply is None or mode in fn.apply:
+            if fn.apply_modes is None or mode in fn.apply_modes:
                 y = fn(
                     data_dict = data_dict,
                     model = self

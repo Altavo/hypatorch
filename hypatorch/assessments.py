@@ -100,7 +100,7 @@ class HypaAssessment( torch.nn.Module ):
             requires_model: bool = False,
             ):
         super().__init__()
-        self.apply = apply
+        self.apply_modes = apply
         self.weight = weight
         self.name = name
         self.inputs = inputs
