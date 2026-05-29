@@ -12,6 +12,12 @@ import yaml
 
 from typing import List, Dict, Optional, Union, Callable, Any, Tuple
 
+try:
+    import torchmetrics as _torchmetrics
+    _TORCHMETRICS_AVAILABLE = True
+except ImportError:
+    _TORCHMETRICS_AVAILABLE = False
+
 from .utils import get_input_variable_names
 from .utils import get_output_variable_names
 from .utils import shared_dict
@@ -673,10 +679,16 @@ class Model( L.LightningModule ):
                 mode = mode,
                 )
             if mode != 'predict':
+                fn_by_name = {fn.name: fn for fn in assessments[operation_name]}
                 for k, v in assessments_dict.items():
+                    fn = fn_by_name[k]
+                    if _TORCHMETRICS_AVAILABLE and isinstance(fn.assessment, _torchmetrics.Metric):
+                        log_value = fn.assessment
+                    else:
+                        log_value = v
                     self.log(
                         f'{mode}_{k}',
-                        v,
+                        log_value,
                         on_epoch=True,
                         on_step=True,
                         prog_bar=True,
