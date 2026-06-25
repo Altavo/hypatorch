@@ -1,7 +1,7 @@
 [build-system]
 requires = [
   "setuptools>=68",
-  "wheel"
+  "setuptools-scm>=8",
 ]
 build-backend = "setuptools.build_meta"
 
@@ -52,8 +52,11 @@ example = [
 [project.urls]
 Homepage = "https://github.com/Altavo/hypatorch/"
 
-[tool.setuptools.dynamic]
-version = { attr = "hypatorch.__version__" }
+# Version is derived from git tags (vX.Y.Z) by setuptools-scm and written to
+# hypatorch/_version.py at build time. To release a new version, just create a
+# GitHub Release on a new tag -- no manual edits needed here or in __init__.py.
+[tool.setuptools_scm]
+version_file = "hypatorch/_version.py"
 
 [tool.setuptools.packages.find]
 where = ["."]

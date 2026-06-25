@@ -7,4 +7,9 @@ from hypatorch.losses import MMSE_Loss
 from hypatorch.train import Trainer
 from hypatorch import logger
 
-__version__ = '1.0.2'
+try:
+    # Generated at build time by setuptools-scm from the git tag.
+    from hypatorch._version import __version__
+except ImportError:
+    # Running from a source tree that was never built (no scm metadata).
+    __version__ = '0.0.0+unknown'

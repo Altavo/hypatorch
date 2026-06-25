@@ -1,0 +1,38 @@
+name: Tests
+
+# Runs on every push to main and on every PR, and is also callable by other
+# workflows (release/publish) so the same suite gates a release.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history + tags so setuptools-scm can resolve the version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      # torch resolves to the CPU-only wheel via the pytorch-cpu index pinned in
+      # pyproject.toml, so CI never downloads multi-GB CUDA builds.
+      - name: Install dependencies
+        run: uv sync --locked --group test
+
+      - name: Run tests
+        run: uv run pytest -v
