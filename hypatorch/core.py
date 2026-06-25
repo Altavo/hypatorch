@@ -399,14 +399,21 @@ class Model( torch.nn.Module ):
                     )
             
             sm_out_dict = { key: value for key, value in zip( expected_outputs, submodule_out ) }
-            #x = { key_map: sm_out_dict[ key ] for key, key_map in output_key_map.items() }
             x = {}
-            for key, key_map in output_key_map.items():
+            for position, ( key, key_map ) in enumerate( output_key_map.items() ):
+                # Name-based mapping when the returned value is a bare name that
+                # matches the configured key; otherwise fall back to positional
+                # mapping (declaration order), which covers expression returns
+                # such as `return torch.cat(...)`.
+                if key in sm_out_dict:
+                    value = sm_out_dict[ key ]
+                else:
+                    value = submodule_out[ position ]
                 if isinstance( key_map, str ):
-                    x[ key_map ] = sm_out_dict[ key ]
+                    x[ key_map ] = value
                 elif isinstance( key_map, List ) or isinstance( key_map, ListConfig ):
                     for idx, km in enumerate( key_map ):
-                        x[ km ] = sm_out_dict[ key ][ idx ]
+                        x[ km ] = value[ idx ]
                 else:
                     raise ValueError(
                         f"""
