@@ -1,5 +1,7 @@
 import torch
 import inspect
+import ast
+import textwrap
 from omegaconf import DictConfig
 from omegaconf import ListConfig
 
@@ -44,17 +46,22 @@ def get_output_variable_names(func):
             """
             )
     
-    return_part = return_part[1]
-    # Remove leading and trailing "(" and ")"
-    chars_to_replace = ["(", ")", "\n", " "]
-    for char in chars_to_replace:
-        return_part = return_part.replace(char, "")
-    # Remove trailing commas
-    return_part = return_part.rstrip(",")
-    # Split by commas and clean up the code
-    returned_variables = return_part.split(",")
-
-    returned_variables = [var.strip() for var in returned_variables]
+    # Parse the single return statement via AST so multi-value returns are
+    # counted correctly even when a returned value is a call/expression that
+    # itself contains commas (e.g. `return torch.cat(x, dim=d)` is ONE value,
+    # not two). Bare names are reported by name so explicit name-based output
+    # mapping keeps working; non-name expressions get positional placeholders,
+    # which core._run_submodule maps positionally in declaration order.
+    function_node = ast.parse(textwrap.dedent(source_lines)).body[0]
+    return_nodes = [n for n in ast.walk(function_node) if isinstance(n, ast.Return)]
+    return_value = return_nodes[-1].value
+    return_elements = (
+        return_value.elts if isinstance(return_value, ast.Tuple) else [return_value]
+    )
+    returned_variables = [
+        element.id if isinstance(element, ast.Name) else f"_output_{index}"
+        for index, element in enumerate(return_elements)
+    ]
     
     return returned_variables
 
@@ -123,7 +130,13 @@ def validate_io_keys(
             as required input_keys, but {input_keys} were given.
             """
             )
-    if not set( output_keys ).issubset( set( expected_outputs ) ):
+    output_names_match = set( output_keys ).issubset( set( expected_outputs ) )
+    # Expression returns (e.g. `return torch.cat(...)`) produce positional
+    # placeholders in expected_outputs that won't match the configured output
+    # keys; accept them as long as we don't request more outputs than were
+    # returned. core._run_submodule then maps those positionally, in order.
+    positional_ok = len( output_keys ) <= len( expected_outputs )
+    if not ( output_names_match or positional_ok ):
         raise ValueError(
             f"""
             {module_name} ({module_object_name}) expects {expected_outputs}
