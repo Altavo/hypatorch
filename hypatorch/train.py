@@ -550,17 +550,33 @@ class Trainer:
     def _signal_handler_context(self):
         previous_handlers = {}
 
-        def _handler(signum, _frame):
-            try:
-                signame = signal.Signals(signum).name
-            except ValueError:
-                signame = str(signum)
-            self._request_stop(f"signal:{signame}")
+        def _make_handler(previous):
+            def _handler(signum, frame):
+                try:
+                    signame = signal.Signals(signum).name
+                except ValueError:
+                    signame = str(signum)
+                self._request_stop(f"signal:{signame}")
+                # Chain to a previously-installed handler so outer layers can
+                # react immediately (e.g. finalize a tracking run) instead of
+                # waiting for the training loop to reach the next should_stop
+                # check -- which may never happen if we are blocked in setup or
+                # a long step. A previous handler that raises (e.g. to abort)
+                # unwinds through training; SIG_DFL/SIG_IGN are left untouched so
+                # the default graceful-stop behavior is preserved when nothing
+                # else is installed.
+                if callable(previous) and previous not in (
+                    signal.SIG_DFL,
+                    signal.SIG_IGN,
+                ):
+                    previous(signum, frame)
+
+            return _handler
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 previous_handlers[sig] = signal.getsignal(sig)
-                signal.signal(sig, _handler)
+                signal.signal(sig, _make_handler(previous_handlers[sig]))
             except (ValueError, OSError, RuntimeError):
                 continue
 
