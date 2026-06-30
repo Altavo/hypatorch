@@ -30,6 +30,7 @@ class Trainer:
         strategy=None,
         precision=None,
         log_every_n_steps=25,
+        check_val_every_n_epoch=1,
         logger=None,
         seed=1234,
         float32_matmul_precision="high",
@@ -48,7 +49,10 @@ class Trainer:
     ):
         distributed_backend = kwargs.pop("_distributed_backend", None)
         allow_cpu_distributed = bool(kwargs.pop("_allow_cpu_distributed", False))
-        del kwargs
+        if kwargs:
+            raise TypeError(
+                f"Trainer got unexpected keyword argument(s): {sorted(kwargs)}"
+            )
 
         devices = self._normalize_requested_devices(devices)
         self._validate_execution_config(
@@ -105,6 +109,9 @@ class Trainer:
 
         # Termination / checkpointing
         self.max_epochs = max_epochs
+        if not isinstance(check_val_every_n_epoch, int) or check_val_every_n_epoch < 1:
+            raise ValueError("check_val_every_n_epoch must be a positive integer.")
+        self.check_val_every_n_epoch = check_val_every_n_epoch
         self.max_samples = None if max_samples is None or max_samples < 0 else max_samples
         self.checkpoint_interval_seconds = checkpoint_interval_seconds
         self.checkpoint_artifact_path = checkpoint_artifact_path
@@ -857,7 +864,11 @@ class Trainer:
             while self.epoch_idx < max_epochs and not self.should_stop:
                 current_epoch = self.epoch_idx
 
-                if val_dataset is not None:
+                run_validation = (
+                    val_dataset is not None
+                    and current_epoch % self.check_val_every_n_epoch == 0
+                )
+                if run_validation:
                     if not self.distributed.enabled or self.distributed.is_rank_zero:
                         self.model.eval()
                         validation_model = (
