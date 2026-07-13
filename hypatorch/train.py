@@ -14,6 +14,21 @@ from .logger import DistributedLogger
 from .utils import shared_dict, update_output
 
 
+class Callback:
+    """Minimal, Lightning-free hook interface for :meth:`Trainer.predict`.
+    """
+
+    def on_predict_start(self) -> None:
+        pass
+
+    def on_predict_batch_end(self, output: dict, batch, batch_idx) -> None:
+        """ hypatorch only needs output. batch is for backward compatibility with Lightning-style callbacks. """
+        pass
+
+    def on_predict_end(self) -> None:
+        pass
+
+
 class Trainer:
     @staticmethod
     def _normalize_requested_devices(devices):
@@ -45,6 +60,7 @@ class Trainer:
         checkpoint_interval_seconds=None,
         checkpoint_artifact_path="checkpoints",
         save_last=True,
+        callbacks=(),
         **kwargs,
     ):
         distributed_backend = kwargs.pop("_distributed_backend", None)
@@ -116,6 +132,7 @@ class Trainer:
         self.checkpoint_interval_seconds = checkpoint_interval_seconds
         self.checkpoint_artifact_path = checkpoint_artifact_path
         self.save_last = save_last
+        self.callbacks = list(callbacks)
 
         # Step state
         self.global_step = 0
@@ -998,3 +1015,47 @@ class Trainer:
             logger=logger,
             checkpoint_path=checkpoint_path,
         )
+
+    def predict(self, model: Model, dataset, loader_args=None):
+        """Run inference over ``dataset``, emitting per-batch events to the
+        callbacks passed to ``Trainer(callbacks=...)`` (Lightning-style).
+
+        Drives ``model(input_dict, operation_name, mode='predict')`` — the same
+        forward path the training/validation steps use — under ``no_grad`` and
+        the autocast context, with no optimizers, loss, metrics, or logging.
+        Each callback receives the merged input+output dict, so both the model
+        predictions and any pass-through inputs (e.g. sample ids) are available.
+        """
+        model.to(self.device)
+        model.eval()
+        operations = list(self._stateful_model(model).operations.keys())
+        loader = self._as_dataloader(
+            dataset,
+            shuffle=False,
+            loader_args=dict(loader_args or {}),
+            epoch=0,
+        )
+        for callback in self.callbacks:
+            callback.on_predict_start()
+
+        for batch_idx, batch in enumerate(loader):
+            input_dict = self._input_to_device(batch)
+            output_dict = {}
+            with torch.no_grad(), self._forward_context(mode="predict"):
+                for operation_name in operations:
+                    update_output(
+                        model(
+                            input_dict=shared_dict(input_dict, output_dict),
+                            operation_name=operation_name,
+                            mode="predict",
+                        ),
+                        output_dict,
+                        operation_name,
+                    )
+            prediction = shared_dict(input_dict, output_dict)
+
+            for callback in self.callbacks:
+                callback.on_predict_batch_end(prediction, batch, batch_idx)
+
+        for callback in self.callbacks:
+            callback.on_predict_end()
