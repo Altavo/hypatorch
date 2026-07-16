@@ -55,6 +55,7 @@ class Trainer:
         autocast_dtype=None,
         grad_accum_steps=1,
         max_samples=None,
+        max_val_samples=None,
         gradient_clip_val=None,
         gradient_clip_algorithm="norm",
         checkpoint_interval_seconds=None,
@@ -129,6 +130,12 @@ class Trainer:
             raise ValueError("check_val_every_n_epoch must be a positive integer.")
         self.check_val_every_n_epoch = check_val_every_n_epoch
         self.max_samples = None if max_samples is None or max_samples < 0 else max_samples
+        # Per-validation-pass cap on samples. Unlike max_samples (a whole-run
+        # training budget), this bounds each validation pass and does NOT stop the
+        # run. None / < 0 => validate the full val set.
+        self.max_val_samples = (
+            None if max_val_samples is None or max_val_samples < 0 else max_val_samples
+        )
         self.checkpoint_interval_seconds = checkpoint_interval_seconds
         self.checkpoint_artifact_path = checkpoint_artifact_path
         self.save_last = save_last
@@ -700,9 +707,12 @@ class Trainer:
         if logger:
             logger.log_value(f"{mode}_epoch", epoch)
 
+        cap_val_samples = mode == "val" and self.max_val_samples is not None
+        val_samples_seen = 0
         with self.distributed.join_context(model, enable=mode == "train"):
             for epoch_step, input_dict in enumerate(dataset):
-                batch_size = self._infer_batch_size(input_dict) if mode == "train" else 0
+                count_samples = mode == "train" or cap_val_samples
+                batch_size = self._infer_batch_size(input_dict) if count_samples else 0
                 output_dict, metrics, step, global_step = self.step(
                     mode=mode,
                     model=model,
@@ -729,6 +739,10 @@ class Trainer:
                         logger=logger,
                         checkpoint_path=checkpoint_path,
                     )
+                elif cap_val_samples:
+                    val_samples_seen += batch_size
+                    if val_samples_seen >= self.max_val_samples:
+                        break
 
                 if self.should_stop:
                     break
