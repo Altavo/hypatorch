@@ -132,10 +132,13 @@ class MLflowLogger(DataLogger):
         self._mlflow = mlflow
 
     def _metric_step(self) -> int:
-        for candidate in ("train_step", "val_step", "global_step"):
-            value = self._step_log.get(candidate)
-            if isinstance(value, int):
-                return value
+        # The tracking backend requires a single, monotonically-increasing step
+        # axis. Only global_step is monotonic across both train and val;
+        # train_step and val_step are independent per-mode counters that would
+        # collide when both are mapped onto one step axis.
+        value = self._step_log.get("global_step")
+        if isinstance(value, int):
+            return value
         return self._epoch_step
 
     def report_step(self):
@@ -269,10 +272,13 @@ class WandbLogger(DataLogger):
             )
 
     def _metric_step(self) -> int:
-        for candidate in ("train_step", "val_step", "global_step"):
-            value = self._step_log.get(candidate)
-            if isinstance(value, int):
-                return value
+        # wandb requires a single, monotonically-increasing step axis. Only
+        # global_step is monotonic across both train and val; train_step and
+        # val_step are independent per-mode counters that would collide (and get
+        # silently dropped by wandb) when both are mapped onto wandb's step.
+        value = self._step_log.get("global_step")
+        if isinstance(value, int):
+            return value
         return self._epoch_step
 
     def report_step(self):
