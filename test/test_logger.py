@@ -141,6 +141,35 @@ def test_wandb_logger_validation_is_one_aggregated_point_on_samples_axis():
     assert val_points[0]["samples"] == 320
 
 
+def test_wandb_logger_preserves_slash_namespaced_metric_keys():
+    # Slash-namespaced assessment keys (train/…, val/…) must flow through as a
+    # groupable section name, while flat progress coordinates stay flat.
+    run = _FakeRun()
+    original = sys.modules.get("wandb")
+    sys.modules["wandb"] = _fake_wandb(run)
+    try:
+        logger = WandbLogger(log_every_n_steps=1)
+        logger.log_value("train/mean_cross_entropy", 0.5)
+        logger.log_value("train_step", 3)
+        logger.log_value("global_step", 7)
+        logger.log_value("samples", 32)
+        logger.step_done()
+    finally:
+        if original is None:
+            sys.modules.pop("wandb", None)
+        else:
+            sys.modules["wandb"] = original
+
+    payload = run.logged[0][0]
+    # The section-bearing key keeps its slash and gains the per-step suffix.
+    assert "train/mean_cross_entropy_step" in payload
+    # Coordinates remain flat (they are x-axes, not grouped metrics).
+    assert payload["samples"] == 32
+    assert payload["global_step"] == 7
+    assert payload["train_step"] == 3
+    assert "train_step_step" not in payload
+
+
 def test_wandb_logger_logs_file_and_directory_artifacts(tmp_path):
     run = _FakeRun()
     original = sys.modules.get("wandb")
