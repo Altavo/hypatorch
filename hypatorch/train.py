@@ -633,6 +633,11 @@ class Trainer:
         if logger:
             logger.log_value(f"{mode}_step", step)
             logger.log_value("global_step", global_step)
+            # Cumulative training samples is the default display x-axis. It only
+            # advances during training, so during validation it stays frozen at
+            # the value reached when the eval started -- exactly where the
+            # validation point should be plotted.
+            logger.log_value("samples", self.train_samples)
 
         input_dict = self._input_to_device(input_dict)
         output_dict = {}

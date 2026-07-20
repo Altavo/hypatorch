@@ -90,6 +90,37 @@ class DataLogger(ABC):
 
             yield k, v
 
+    # Progress coordinates are logged verbatim (no _step/_epoch suffix, never
+    # averaged) so the tracking backend can use them as x-axes. See
+    # WandbLogger.__init__, which makes `samples` the default display axis.
+    _COORDINATE_KEYS = frozenset({"samples", "global_step", "train_step", "val_step"})
+
+    def _is_validation(self) -> bool:
+        # A validation flush carries val_step but no train_step. Used to emit a
+        # single aggregated validation point per pass (via report_epoch) instead
+        # of one point per validation batch.
+        return "val_step" in self._step_log and "train_step" not in self._step_log
+
+    def _is_coordinate_key(self, key: str) -> bool:
+        base = key
+        if base.endswith("_step"):
+            base = base[: -len("_step")]
+        elif base.endswith("_epoch"):
+            base = base[: -len("_epoch")]
+        return key in self._COORDINATE_KEYS or base in self._COORDINATE_KEYS
+
+    def _progress_coordinates(self) -> dict:
+        # Current position, read live from the step log so it is correct for
+        # both per-step and per-epoch flushes. During validation the training
+        # coordinates (samples/train_step) are frozen at the value reached when
+        # the eval started, which is exactly where the val point should land.
+        coords = {}
+        for key in self._COORDINATE_KEYS:
+            value = self._step_log.get(key)
+            if isinstance(value, int):
+                coords[key] = value
+        return coords
+
 
 class ConsoleLogger(DataLogger):
     def __init__(self, log_every_n_steps:int=1, float_precision:int=4):
@@ -142,25 +173,41 @@ class MLflowLogger(DataLogger):
         return self._epoch_step
 
     def report_step(self):
+        # Validation is emitted once per pass in report_epoch (a single
+        # aggregated point at the training-progress coordinate), so skip the
+        # per-batch validation flush here.
+        if self._is_validation():
+            return
+
         metrics = {}
         for key, value in self.step_items():
+            if self._is_coordinate_key(key):
+                continue
             if isinstance(value, torch.Tensor):
                 value = value.item()
             if isinstance(value, (int, float)):
                 metrics[key] = float(value)
 
         if metrics:
+            metrics.update(
+                {k: float(v) for k, v in self._progress_coordinates().items()}
+            )
             self._mlflow.log_metrics(metrics, step=self._metric_step())
 
     def report_epoch(self):
         metrics = {}
         for key, value in self.epoch_items():
+            if self._is_coordinate_key(key):
+                continue
             if isinstance(value, torch.Tensor):
                 value = value.item()
             if isinstance(value, (int, float)):
                 metrics[key] = float(value)
 
         if metrics:
+            metrics.update(
+                {k: float(v) for k, v in self._progress_coordinates().items()}
+            )
             self._mlflow.log_metrics(metrics, step=self._metric_step())
 
     def _plot_images(self, data_dict, log_image_keys):
@@ -271,6 +318,14 @@ class WandbLogger(DataLogger):
                 "WandbLogger requires an active wandb run. Call wandb.init() before constructing the logger."
             )
 
+        # Decouple the human-facing x-axis from wandb's monotonic commit step:
+        # plot every metric against cumulative training samples by default.
+        # Validation is logged at the samples reached when it ran, so val and
+        # train curves align, and validation batches (which do not advance
+        # `samples`) no longer distort the axis.
+        self._run.define_metric("samples")
+        self._run.define_metric("*", step_metric="samples")
+
     def _metric_step(self) -> int:
         # wandb requires a single, monotonically-increasing step axis. Only
         # global_step is monotonic across both train and val; train_step and
@@ -282,25 +337,37 @@ class WandbLogger(DataLogger):
         return self._epoch_step
 
     def report_step(self):
+        # Validation is emitted once per pass in report_epoch (a single
+        # aggregated point at the training-progress coordinate), so skip the
+        # per-batch validation flush here.
+        if self._is_validation():
+            return
+
         metrics = {}
         for key, value in self.step_items():
+            if self._is_coordinate_key(key):
+                continue
             if isinstance(value, torch.Tensor):
                 value = value.item()
             if isinstance(value, (int, float)):
                 metrics[key] = value
 
         if metrics:
+            metrics.update(self._progress_coordinates())
             self._run.log(metrics, step=self._metric_step())
 
     def report_epoch(self):
         metrics = {}
         for key, value in self.epoch_items():
+            if self._is_coordinate_key(key):
+                continue
             if isinstance(value, torch.Tensor):
                 value = value.item()
             if isinstance(value, (int, float)):
                 metrics[key] = value
 
         if metrics:
+            metrics.update(self._progress_coordinates())
             self._run.log(metrics, step=self._metric_step())
 
     def _plot_images(self, data_dict, log_image_keys):

@@ -18,6 +18,10 @@ class _FakeRun:
         self.logged = []
         self.artifacts = []
         self.finished = []
+        self.defined_metrics = []
+
+    def define_metric(self, name, step_metric=None):
+        self.defined_metrics.append((name, step_metric))
 
     def log(self, data, step=None):
         self.logged.append((data, step))
@@ -56,6 +60,8 @@ def test_wandb_logger_logs_step_and_epoch_metrics():
         logger = WandbLogger(log_every_n_steps=1)
         logger.log_value("loss", 0.5)
         logger.log_value("train_step", 3)
+        logger.log_value("global_step", 7)
+        logger.log_value("samples", 32)
         logger.step_done()
         logger.epoch_done()
     finally:
@@ -64,9 +70,75 @@ def test_wandb_logger_logs_step_and_epoch_metrics():
         else:
             sys.modules["wandb"] = original
 
-    assert run.logged[0] == ({"loss_step": 0.5, "train_step": 3}, 3)
-    assert run.logged[1][1] == 3
+    # `samples` is declared as the default display x-axis; global_step remains
+    # the monotonic commit step.
+    assert ("samples", None) in run.defined_metrics
+    assert ("*", "samples") in run.defined_metrics
+
+    # Progress counters are stamped verbatim as coordinates (not suffixed to
+    # loss_step-style keys); only the assessment metric is suffixed. global_step
+    # is the commit step passed to wandb.
+    assert run.logged[0] == (
+        {"loss_step": 0.5, "samples": 32, "global_step": 7, "train_step": 3},
+        7,
+    )
+    assert run.logged[1][1] == 7
     assert run.logged[1][0]["loss_epoch"] == 0.5
+    assert run.logged[1][0]["samples"] == 32
+
+
+def test_wandb_logger_validation_is_one_aggregated_point_on_samples_axis():
+    # Validation must produce a single aggregated point per pass, plotted at the
+    # training-progress coordinate (samples) reached when the eval ran -- not
+    # one point per val batch, and not at the restarted val_step. The commit
+    # step (global_step) stays monotonic so nothing is dropped.
+    run = _FakeRun()
+    original = sys.modules.get("wandb")
+    sys.modules["wandb"] = _fake_wandb(run)
+    try:
+        logger = WandbLogger(log_every_n_steps=1)
+
+        # One training step: samples advanced to 320.
+        logger.log_value("loss", 1.0)
+        logger.log_value("train_step", 10)
+        logger.log_value("global_step", 10)
+        logger.log_value("samples", 320)
+        logger.step_done()
+        logger.epoch_done()
+
+        # A validation pass of two batches: val_step restarts, global_step keeps
+        # rising, samples is frozen at 320 (no training happened).
+        logger.log_value("cer", 0.3)
+        logger.log_value("val_step", 0)
+        logger.log_value("global_step", 11)
+        logger.log_value("samples", 320)
+        logger.step_done()
+        logger.log_value("cer", 0.5)
+        logger.log_value("val_step", 1)
+        logger.log_value("global_step", 12)
+        logger.log_value("samples", 320)
+        logger.step_done()
+        logger.epoch_done()
+    finally:
+        if original is None:
+            sys.modules.pop("wandb", None)
+        else:
+            sys.modules["wandb"] = original
+
+    payloads = [data for data, _ in run.logged]
+    steps = [step for _, step in run.logged]
+
+    # Commit step never rewinds.
+    assert steps == sorted(steps), f"commit steps not monotonic: {steps}"
+
+    # Validation contributed exactly one point (no per-batch cer_step writes).
+    assert not any("cer_step" in p for p in payloads)
+    val_points = [p for p in payloads if "cer_epoch" in p]
+    assert len(val_points) == 1
+
+    # It is the aggregate over the pass, plotted at the frozen samples axis.
+    assert val_points[0]["cer_epoch"] == 0.4
+    assert val_points[0]["samples"] == 320
 
 
 def test_wandb_logger_logs_file_and_directory_artifacts(tmp_path):
