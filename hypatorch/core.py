@@ -549,8 +549,12 @@ class Model( torch.nn.Module ):
                 )
             if logger:
                 for k, v in assessments_dict.items():
+                    # Slash-namespace by mode so the tracking backend groups
+                    # metrics into "train"/"val" sections (e.g. "val/cer"). The
+                    # per-step / per-epoch suffix is appended downstream by the
+                    # logger, giving keys like "val/cer_epoch".
                     logger.log_value(
-                        f'{mode}_{k}',
+                        f'{mode}/{k}',
                         v.item(),
                     )
         else:
