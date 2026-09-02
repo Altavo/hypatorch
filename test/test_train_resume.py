@@ -2,6 +2,7 @@ import unittest
 import os
 import tempfile
 import torch
+from unittest.mock import Mock
 from hydra import initialize, compose
 from hydra.utils import instantiate
 
@@ -98,6 +99,26 @@ class TestTrainResume(unittest.TestCase):
                 )
                 assert "last.ckpt" in checkpoint_files
                 assert len(checkpoint_files) > 1
+
+    def test_final_checkpoint_retains_logged_artifact_handle(self):
+        trainer = hypatorch.Trainer(save_last=True)
+        trainer.model = object()
+        trainer.save_checkpoint = Mock(return_value="outputs/last.ckpt")
+        artifact = object()
+        logger = Mock()
+        logger.log_artifact.return_value = artifact
+
+        checkpoint_file = trainer._finalize_last_checkpoint(
+            logger=logger,
+            checkpoint_path="outputs",
+        )
+
+        assert checkpoint_file == "outputs/last.ckpt"
+        assert trainer.last_checkpoint_artifact is artifact
+        logger.log_artifact.assert_called_once_with(
+            "outputs/last.ckpt",
+            artifact_path="checkpoints",
+        )
 
     def test_multi_device_config_is_rejected(self):
         with self.assertRaises(NotImplementedError):

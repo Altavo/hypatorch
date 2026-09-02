@@ -515,7 +515,7 @@ class WandbLogger(DataLogger):
             type=self._artifact_type(path, artifact_path),
         )
         self._add_path_to_artifact(artifact, path, artifact_path=artifact_path)
-        self._run.log_artifact(artifact, aliases=["latest"])
+        return self._run.log_artifact(artifact, aliases=["latest"])
 
     def finalize(self, status: str):
         exit_code = 0 if status == "FINISHED" else 1

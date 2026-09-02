@@ -28,6 +28,7 @@ class _FakeRun:
 
     def log_artifact(self, artifact, aliases=None):
         self.artifacts.append((artifact, aliases))
+        return artifact
 
     def finish(self, exit_code=0):
         self.finished.append(exit_code)
@@ -184,7 +185,9 @@ def test_wandb_logger_logs_file_and_directory_artifacts(tmp_path):
         (export_dir / "root.txt").write_text("root", encoding="utf-8")
         (nested_dir / "child.txt").write_text("child", encoding="utf-8")
 
-        logger.log_artifact(str(checkpoint_path), artifact_path="checkpoints")
+        logged_checkpoint = logger.log_artifact(
+            str(checkpoint_path), artifact_path="checkpoints"
+        )
         logger.log_artifact(str(export_dir), artifact_path="exports")
     finally:
         if original is None:
@@ -197,6 +200,7 @@ def test_wandb_logger_logs_file_and_directory_artifacts(tmp_path):
     assert checkpoint_artifact.type == "model"
     assert checkpoint_artifact.files == [(str(checkpoint_path), "last.ckpt")]
     assert checkpoint_aliases == ["latest"]
+    assert logged_checkpoint is checkpoint_artifact
 
     export_artifact, export_aliases = run.artifacts[1]
     assert export_artifact.name == "run-run-123-exports"

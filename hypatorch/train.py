@@ -156,6 +156,7 @@ class Trainer:
         self.state_model = None
         self.rng_state_dict = None
         self.last_checkpoint_path = None
+        self.last_checkpoint_artifact = None
 
         # Internal execution state
         self.should_stop = False
@@ -273,6 +274,7 @@ class Trainer:
         self.should_stop = False
         self._stop_reason = None
         self.last_checkpoint_path = None
+        self.last_checkpoint_artifact = None
 
     def _reset_random_seed(self):
         torch.manual_seed(self.seed)
@@ -526,8 +528,8 @@ class Trainer:
 
     def _log_checkpoint_artifact(self, checkpoint_file, logger):
         if logger is None or not hasattr(logger, "log_artifact"):
-            return
-        logger.log_artifact(
+            return None
+        return logger.log_artifact(
             checkpoint_file,
             artifact_path=self.checkpoint_artifact_path,
         )
@@ -570,7 +572,10 @@ class Trainer:
             self.schedulers,
             chkpt_dir=checkpoint_path,
         )
-        self._log_checkpoint_artifact(checkpoint_file, logger)
+        self.last_checkpoint_artifact = self._log_checkpoint_artifact(
+            checkpoint_file,
+            logger,
+        )
         return checkpoint_file
 
     def _request_stop(self, reason):
@@ -633,10 +638,6 @@ class Trainer:
         if logger:
             logger.log_value(f"{mode}_step", step)
             logger.log_value("global_step", global_step)
-            # Cumulative training samples is the default display x-axis. It only
-            # advances during training, so during validation it stays frozen at
-            # the value reached when the eval started -- exactly where the
-            # validation point should be plotted.
             logger.log_value("samples", self.train_samples)
 
         input_dict = self._input_to_device(input_dict)
@@ -990,6 +991,7 @@ class Trainer:
         self.should_stop = False
         self._stop_reason = None
         self.last_checkpoint_path = None
+        self.last_checkpoint_artifact = None
         self._prepare_model_training(model)
         self.load_checkpoint(
             name=chkpt_name,
@@ -1025,6 +1027,7 @@ class Trainer:
         self.should_stop = False
         self._stop_reason = None
         self.last_checkpoint_path = None
+        self.last_checkpoint_artifact = None
         self.set_rng_state_dict(self.rng_state_dict)
         logger = self._wrap_logger(logger or self.logger)
         self._training_loop(
