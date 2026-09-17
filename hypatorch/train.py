@@ -900,36 +900,7 @@ class Trainer:
         with self._signal_handler_context():
             while self.epoch_idx < max_epochs and not self.should_stop:
                 current_epoch = self.epoch_idx
-
-                run_validation = (
-                    val_dataset is not None
-                    and current_epoch % self.check_val_every_n_epoch == 0
-                )
-                if run_validation:
-                    if not self.distributed.enabled or self.distributed.is_rank_zero:
-                        self.model.eval()
-                        validation_model = (
-                            self.state_model if self.distributed.enabled else self.model
-                        )
-                        val_loader = self._as_dataloader(
-                            val_dataset,
-                            shuffle=False,
-                            loader_args=loader_args,
-                            epoch=current_epoch,
-                        )
-                        self.epoch(
-                            mode="val",
-                            model=validation_model,
-                            epoch=current_epoch,
-                            dataset=val_loader,
-                            logger=logger,
-                            checkpoint_path=checkpoint_path,
-                        )
-                    if self.distributed.enabled:
-                        self.distributed.barrier()
-
-                if self.should_stop:
-                    break
+                last_epoch = current_epoch + 1 >= max_epochs
 
                 self.model.train()
                 train_loader = self._as_dataloader(
@@ -951,6 +922,44 @@ class Trainer:
                 )
 
                 self.epoch_idx = current_epoch + 1
+
+                if self.should_stop:
+                    break
+
+                # After the epoch, not before it. `check_val_every_n_epoch` is Lightning's
+                # name and Lightning validates at the END of every Nth epoch; validating at
+                # the TOP instead shifts the whole series one epoch earlier, so it opens on
+                # the untrained model and never reaches the weights `_finalize_last_checkpoint`
+                # keeps. At N == max_epochs that is the entire series: one row, measured
+                # before a single optimizer step, published as the trained model's score.
+                #
+                # The last epoch always validates, whatever N divides: `save_last` keeps
+                # those weights, and a checkpoint nothing measured is what this method is
+                # for. N still decides how much of the run before it is measured.
+                if val_dataset is not None and (
+                    last_epoch or self.epoch_idx % self.check_val_every_n_epoch == 0
+                ):
+                    if not self.distributed.enabled or self.distributed.is_rank_zero:
+                        self.model.eval()
+                        validation_model = (
+                            self.state_model if self.distributed.enabled else self.model
+                        )
+                        val_loader = self._as_dataloader(
+                            val_dataset,
+                            shuffle=False,
+                            loader_args=loader_args,
+                            epoch=current_epoch,
+                        )
+                        self.epoch(
+                            mode="val",
+                            model=validation_model,
+                            epoch=current_epoch,
+                            dataset=val_loader,
+                            logger=logger,
+                            checkpoint_path=checkpoint_path,
+                        )
+                    if self.distributed.enabled:
+                        self.distributed.barrier()
 
         self._finalize_last_checkpoint(logger=logger, checkpoint_path=checkpoint_path)
         self.distributed.barrier()
