@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from hypatorch.utils import get_output_variable_names, validate_io_keys
@@ -59,3 +60,67 @@ def test_validate_accepts_configured_key_for_expression_return():
         expected_inputs=(["x"], []),
         expected_outputs=expected_outputs,
     )
+
+
+class _MultiReturn(torch.nn.Module):
+    """Several returns, positionally consistent."""
+
+    def forward(self, x):
+        if x.sum() > 0:
+            wide = torch.cat([x, x], dim=-1)
+            return wide, x
+        narrow = x.detach()
+        return narrow, x
+
+
+class _InconsistentReturn(torch.nn.Module):
+    def forward(self, x):
+        if x.sum() > 0:
+            return x
+        return x, x
+
+
+class _NestedFunction(torch.nn.Module):
+    def forward(self, x):
+        def scale(value):
+            return value * 2
+
+        scaled = scale(x)
+        return scaled
+
+
+class _Mixed(torch.nn.Module):
+    def forward(self, x):
+        return torch.cat([x, x], dim=-1), x
+
+
+def test_several_returns_are_named_by_the_last_one():
+    # Names describe the outputs; values come from whichever branch ran, which
+    # holds because every return is positionally consistent.
+    assert get_output_variable_names(_MultiReturn().forward) == ["narrow", "x"]
+
+
+def test_returns_of_different_arity_are_rejected():
+    with pytest.raises(ValueError, match="same number of values"):
+        get_output_variable_names(_InconsistentReturn().forward)
+
+
+def test_a_nested_function_return_is_ignored():
+    assert get_output_variable_names(_NestedFunction().forward) == ["scaled"]
+
+
+def test_validate_rejects_half_named_output_keys():
+    # `torch.cat(...)` has no name while `x` does, so a config naming one and
+    # positioning the other would silently assign the wrong values.
+    expected_outputs = get_output_variable_names(_Mixed().forward)
+    assert expected_outputs == ["_output_0", "x"]
+
+    with pytest.raises(ValueError, match="Name every returned value or none"):
+        validate_io_keys(
+            module_name="mixed",
+            module_object_name="_Mixed",
+            input_key_map={"x": "image"},
+            output_key_map={"x": "passthrough", "y": "wide"},
+            expected_inputs=(["x"], []),
+            expected_outputs=expected_outputs,
+        )

@@ -28,41 +28,65 @@ def get_input_variable_names(func):
 
     return required_variables, optional_variables
 
-def get_output_variable_names(func):
-    # Get the source code of the function
-    source_lines = inspect.getsource(func)
-    
-    # Get the part after the return statement
-    return_part = source_lines.split("return ")
+def _own_returns(node):
+    """Return statements belonging to this function, not to one nested in it."""
+    returns = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(
+            child,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef),
+            ):
+            continue
+        if isinstance(child, ast.Return):
+            returns.append(child)
+        returns.extend(_own_returns(child))
+    return returns
 
-    # If no return statement or multiple return statements,
-    # are found, raise an error
-    if "return " not in source_lines or return_part.count("return ") > 1:
+
+def _returned_elements(return_node):
+    value = return_node.value
+    if value is None:
+        return []
+    return value.elts if isinstance(value, ast.Tuple) else [value]
+
+
+def get_output_variable_names(func):
+    source_lines = inspect.getsource(func)
+    function_node = ast.parse(textwrap.dedent(source_lines)).body[0]
+    return_nodes = _own_returns(function_node)
+
+    if not return_nodes:
         raise ValueError(
             f"""
-            The function must have a single return statement,
-            but passed function has {return_part.count("return ")}
-            return statements.
+            The function must have a return statement,
+            but {func.__qualname__} has none.
             """
             )
-    
-    # Parse the single return statement via AST so multi-value returns are
-    # counted correctly even when a returned value is a call/expression that
-    # itself contains commas (e.g. `return torch.cat(x, dim=d)` is ONE value,
-    # not two). Bare names are reported by name so explicit name-based output
-    # mapping keeps working; non-name expressions get positional placeholders,
-    # which core._run_submodule maps positionally in declaration order.
-    function_node = ast.parse(textwrap.dedent(source_lines)).body[0]
-    return_nodes = [n for n in ast.walk(function_node) if isinstance(n, ast.Return)]
-    return_value = return_nodes[-1].value
-    return_elements = (
-        return_value.elts if isinstance(return_value, ast.Tuple) else [return_value]
-    )
+
+    # Several returns are supported: the names below describe the outputs, while
+    # the values come from whichever branch ran. That only holds while every
+    # return is positionally consistent, so disagreeing arities are rejected here
+    # rather than as a confusing length error at the first batch.
+    arities = { len( _returned_elements( node ) ) for node in return_nodes }
+    if len( arities ) > 1:
+        raise ValueError(
+            f"""
+            The return statements of {func.__qualname__} return
+            {sorted( arities )} values respectively. Every return must
+            provide the same number of values, in the same order.
+            """
+            )
+
+    # Bare names are reported by name so explicit name-based output mapping keeps
+    # working; non-name expressions get positional placeholders, which
+    # core._run_submodule maps positionally in declaration order. The last return
+    # names the outputs -- see the arity check above for why that is safe.
+    return_elements = _returned_elements(return_nodes[-1])
     returned_variables = [
         element.id if isinstance(element, ast.Name) else f"_output_{index}"
         for index, element in enumerate(return_elements)
     ]
-    
+
     return returned_variables
 
 def make_iterable(
@@ -130,6 +154,20 @@ def validate_io_keys(
             as required input_keys, but {input_keys} were given.
             """
             )
+    # Name-based and positional mapping cannot be combined: core._run_submodule
+    # takes the position from the configured key order and the name from the
+    # return order, so a mapping that half-matches assigns values to the wrong
+    # keys without failing.
+    named_output_keys = [ key for key in output_keys if key in expected_outputs ]
+    if named_output_keys and len( named_output_keys ) != len( output_keys ):
+        raise ValueError(
+            f"""
+            {module_name} ({module_object_name}) maps {named_output_keys} by name
+            and {[ key for key in output_keys if key not in named_output_keys ]}
+            by position. Name every returned value or none of them.
+            """
+            )
+
     output_names_match = set( output_keys ).issubset( set( expected_outputs ) )
     # Expression returns (e.g. `return torch.cat(...)`) produce positional
     # placeholders in expected_outputs that won't match the configured output
