@@ -1,0 +1,83 @@
+{
+  "hypatorch.assessments.HypaAssessment": [
+    "apply",
+    "assessment",
+    "harmonize_inputs",
+    "harmonizer_kwargs",
+    "inputs",
+    "masking",
+    "name",
+    "requires_model",
+    "weight"
+  ],
+  "hypatorch.assessments.MaskedAssessment": [
+    "reduction",
+    "unmasked_assessment"
+  ],
+  "hypatorch.core.Model": [
+    "checkpoints",
+    "exclude_from_checkpoint",
+    "operations",
+    "submodules",
+    "submodules_eval"
+  ],
+  "hypatorch.core.Scheduler": [
+    "frequency",
+    "interval",
+    "scheduler"
+  ],
+  "hypatorch.logger.ConsoleLogger": [
+    "float_precision",
+    "log_every_n_steps"
+  ],
+  "hypatorch.logger.MLflowLogger": [
+    "log_every_n_steps"
+  ],
+  "hypatorch.logger.WandbLogger": [
+    "log_every_n_steps"
+  ],
+  "hypatorch.losses.MAE_Loss": [
+    "inputs",
+    "weight"
+  ],
+  "hypatorch.losses.MMAE_Loss": [
+    "inputs",
+    "len_key",
+    "weight"
+  ],
+  "hypatorch.losses.MMSE_Loss": [
+    "inputs",
+    "len_key",
+    "weight"
+  ],
+  "hypatorch.losses.MSE_Loss": [
+    "inputs",
+    "weight"
+  ],
+  "hypatorch.train.Trainer": [
+    "accelerator",
+    "autocast_dtype",
+    "callbacks",
+    "check_val_every_n_epoch",
+    "checkpoint_artifact_path",
+    "checkpoint_interval_seconds",
+    "compile_model",
+    "ddp_broadcast_buffers",
+    "ddp_find_unused_parameters",
+    "device",
+    "devices",
+    "float32_matmul_precision",
+    "grad_accum_steps",
+    "gradient_clip_algorithm",
+    "gradient_clip_val",
+    "log_every_n_steps",
+    "logger",
+    "max_epochs",
+    "max_samples",
+    "max_val_samples",
+    "precision",
+    "save_last",
+    "seed",
+    "strategy"
+  ]
+}
