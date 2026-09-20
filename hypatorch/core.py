@@ -19,6 +19,9 @@ from .utils import validate_io_keys
 from .utils import get_module_input
 
 
+MODES = ( 'train', 'val', 'predict' )
+
+
 class Scheduler:
 
     def __init__(
@@ -121,6 +124,8 @@ class Model( torch.nn.Module ):
         ## Losses and metrics
         self.losses = self._get_content( 'losses' )
         self.metrics = self._get_content( 'metrics' )
+
+        self._validate_apply()
 
 
         # Checkpoints
@@ -234,6 +239,49 @@ class Model( torch.nn.Module ):
                     )
         return
     
+    def _validate_apply( self ):
+        """Reject 'apply' values that cannot match any mode the trainer passes."""
+        for op_name, mappings in self.mappings.items():
+            for mapping in mappings:
+                for submodule_name, mapping_dict in mapping.items():
+                    if 'apply' in mapping_dict:
+                        self._check_apply(
+                            apply = mapping_dict[ 'apply' ],
+                            where = f"mapping '{submodule_name}' of operation '{op_name}'",
+                            )
+
+        for kind, assessments in ( ( 'loss', self.losses ), ( 'metric', self.metrics ) ):
+            for op_name, op_assessments in assessments.items():
+                for assessment in op_assessments or []:
+                    if assessment.apply is not None:
+                        self._check_apply(
+                            apply = assessment.apply,
+                            where = f"{kind} '{assessment.name}' of operation '{op_name}'",
+                            )
+        return
+
+    @staticmethod
+    def _check_apply(
+            apply,
+            where,
+            ):
+        # A string is matched by containment and a list by membership, so each
+        # form is unusable in a different way: a string naming no mode, or a list
+        # entry that is not a mode exactly, can never match and silently disables.
+        if isinstance( apply, str ):
+            unusable = not any( mode in apply for mode in MODES )
+        else:
+            unusable = [ entry for entry in apply if entry not in MODES ]
+
+        if unusable:
+            raise ValueError(
+                f"""
+                The 'apply' value {apply} of {where} never matches a mode,
+                so it would never run. Modes are {list( MODES )}.
+                """
+                )
+        return
+
     def _get_content(
             self,
             key,

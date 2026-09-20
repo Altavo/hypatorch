@@ -62,6 +62,11 @@ version_file = "hypatorch/_version.py"
 where = ["."]
 include = ["hypatorch*"]
 
+# The agent docs bundle ships in the wheel so an installed version and its
+# documentation stay in lockstep.
+[tool.setuptools.package-data]
+hypatorch = ["agent_docs/*", "agent_docs/**/*"]
+
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cpu" },
