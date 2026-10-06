@@ -36,7 +36,8 @@ input_dict (the batch)
               validate key maps against the real signature
               gather inputs, run under no_grad if frozen / not calculate_grad / not train
               map returned values to output keys, refusing to overwrite
-      compute_loss   -> sum of weighted assessments -> backward
+      compute_loss   -> sum of weighted assessments -> backward,
+                        isolated to this operation's parameters
       optimizer step, on accumulation boundaries
       compute_metrics
   logger.step_done()
@@ -45,6 +46,23 @@ input_dict (the batch)
 The shared dict is assembled per call with `shared_dict(input_dict,
 output_dict)`, so a mapping always sees the batch plus everything produced so
 far, and `update_output` enforces write-once across operations.
+
+### Why backward is isolated per operation
+
+Each optimizer clears only its own gradients, after its own step. A loss that
+reaches parameters another operation optimizes — the generator loss of a GAN
+flowing through the discriminator — therefore used to leave gradients on them
+that the other optimizer applied at its next step, so the discriminator was
+trained on part of the generator's objective. The Lightning-based loop this
+trainer replaced did not show it, because it zeroed each optimizer's gradients
+*before* that operation's backward.
+
+`Trainer._isolated_gradients` sets other operations' pending gradients aside
+around each backward and restores them afterwards. That keeps gradient
+accumulation exact and leaves DDP's reducer seeing every gradient it saw before.
+`loss.backward(inputs=...)` was rejected for the second reason: it skips the
+gradient hooks of parameters that took part in the forward, which DDP's reducer
+waits for.
 
 ## Signature introspection
 
