@@ -339,6 +339,42 @@ class Trainer:
             return model.no_sync()
         return nullcontext()
 
+    @contextmanager
+    def _isolated_gradients(self, optimizers, operation_name):
+        """Keep an operation's backward from leaving gradients on parameters
+        that only other operations optimize.
+
+        A loss may flow through another operation's submodules, e.g. a GAN
+        generator loss through the discriminator. Those parameter gradients
+        would otherwise survive into the other optimizer's next step, because
+        each optimizer only clears its own gradients. Gradients pass through
+        unchanged; only what lands on the other parameters is discarded.
+        """
+        own = {
+            id(param)
+            for group in optimizers[operation_name].param_groups
+            for param in group["params"]
+        }
+        others = {}
+        for name, optimizer in optimizers.items():
+            if name == operation_name:
+                continue
+            for group in optimizer.param_groups:
+                for param in group["params"]:
+                    if id(param) not in own:
+                        others[id(param)] = param
+
+        # Set pending gradients aside so backward writes into fresh tensors,
+        # then put the originals back; an accumulation in progress is kept.
+        pending = [(param, param.grad) for param in others.values()]
+        for param, _ in pending:
+            param.grad = None
+        try:
+            yield
+        finally:
+            for param, grad in pending:
+                param.grad = grad
+
     def _next_step(self, mode):
         current_step = self.train_step if mode == "train" else self.val_step
         current_global_step = self.global_step
@@ -668,7 +704,8 @@ class Trainer:
 
                 if loss is not None and optimizers:
                     loss = loss / self.grad_accum_steps
-                    with self._backward_context(model, epoch_step):
+                    with self._backward_context(model, epoch_step), \
+                            self._isolated_gradients(optimizers, operation_name):
                         loss.backward()
 
             if optimizers and self._is_optimizer_step_complete(epoch_step):

@@ -13,8 +13,12 @@ For each operation, in declaration order:
 4. Compute its metrics.
 
 Both losses and metrics see the full dict, so a metric may read another
-operation's output. Optimizer steps are per operation, which is what keeps two
-operations from updating each other's parameters.
+operation's output. Optimizer steps are per operation, and an operation's
+backward leaves gradients only on the parameters its own optimizer updates: a
+loss that flows through another operation's submodules — a GAN generator loss
+through the discriminator — trains through them without leaving gradients for
+their optimizer's next step. Two operations never update each other's
+parameters.
 
 ## What an epoch does
 
