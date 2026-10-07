@@ -59,6 +59,7 @@ def _current_surface() -> dict[str, list[str]]:
         surface[dotted] = _surface_names(getattr(import_module(module_name), attribute))
     logger = import_module("hypatorch.logger")
     surface["hypatorch.logger.WandbLogger.log_media"] = _surface_names(logger.WandbLogger.log_media)
+    surface["hypatorch.logger.WandbLogger.log_table"] = _surface_names(logger.WandbLogger.log_table)
     return surface
 
 

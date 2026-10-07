@@ -47,6 +47,13 @@
     "time_axis",
     "value"
   ],
+  "hypatorch.logger.WandbLogger.log_table": [
+    "columns",
+    "data_dict",
+    "global_step",
+    "name",
+    "sample_index"
+  ],
   "hypatorch.losses.MAE_Loss": [
     "inputs",
     "weight"

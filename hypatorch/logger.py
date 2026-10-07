@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import html
 import operator
+from collections.abc import Mapping
 from pathlib import Path
 
 import torch
@@ -37,6 +38,10 @@ class DataLogger(ABC):
 
     def log_artifact(self, local_path: str, artifact_path: str | None = None):
         del local_path, artifact_path
+
+    def log_table(self, name, columns, *, data_dict, sample_index=0, global_step=None):
+        """Optional table hook; unsupported backends ignore it."""
+        del name, columns, data_dict, sample_index, global_step
 
     def finalize(self, status: str):
         del status
@@ -472,6 +477,118 @@ class WandbLogger(DataLogger):
         # here would cause subsequent writes at this step to be dropped by W&B.
         self._run.log(payload, step=step, commit=False)
 
+    @staticmethod
+    def _render_spectrogram(value, time_axis=-1, *, cmap="magma", vmin=None, vmax=None):
+        """Render a 2-D mel-by-time array without changing its amplitude scale."""
+        import numpy as np
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+
+        if len(value.shape) != 2:
+            raise ValueError("render: spectrogram requires a 2-D selected sample")
+        axis = operator.index(time_axis)
+        if not -2 <= axis < 2:
+            raise ValueError("Spectrogram time_axis must identify one of its two axes")
+        value = np.moveaxis(value, axis, -1)
+        if 0 in value.shape:
+            raise ValueError("Cannot render an empty spectrogram")
+        figure = Figure(figsize=(6, 3), layout="constrained")
+        try:
+            canvas = FigureCanvasAgg(figure)
+            axes = figure.subplots()
+            axes.imshow(value, origin="lower", aspect="auto", interpolation="none",
+                        cmap=cmap, vmin=vmin, vmax=vmax)
+            axes.set_xlabel("Frame")
+            axes.set_ylabel("Mel bin")
+            canvas.draw()
+            return np.asarray(canvas.buffer_rgba()).copy()
+        finally:
+            figure.clear()
+
+    def log_table(self, name, columns, *, data_dict, sample_index=0, global_step=None):
+        """Build aligned rows from Hydra column specs and log one W&B table.
+
+        Each column declares name, key, optional media_type, len_key, time_axis,
+        and W&B constructor options. Image columns may use render='spectrogram'
+        with render_options (cmap, vmin, vmax). An integer selects one row, a list
+        preserves order, and None selects every row. All batch lengths must match.
+        """
+        if not isinstance(name, str) or not name or name in self._COORDINATE_KEYS:
+            raise ValueError("Table name must be nonempty and not a progress coordinate")
+        if OmegaConf.is_config(columns):
+            columns = OmegaConf.to_container(columns, resolve=True)
+        if not isinstance(columns, list) or not columns:
+            raise ValueError("columns must be a nonempty list")
+        specs, names = [], []
+        batch_size = None
+        for column in columns:
+            if not isinstance(column, Mapping):
+                raise TypeError("Each table column must be a mapping")
+            spec = dict(column)
+            column_name, key = spec.pop("name", None), spec.pop("key", None)
+            if not isinstance(column_name, str) or not column_name or column_name in names:
+                raise ValueError("Table columns require unique nonempty names")
+            if not isinstance(key, str) or not key:
+                raise ValueError(f"Column {column_name!r} requires a data key")
+            media_type = spec.pop("media_type", None)
+            if media_type is not None and media_type not in self._MEDIA_TYPES:
+                raise ValueError(f"Unsupported media_type: {media_type!r}")
+            if media_type == "graph":
+                raise ValueError("Pass prebuilt graphs without media_type")
+            len_key = spec.pop("len_key", None)
+            time_axis = spec.pop("time_axis", -1)
+            render = spec.pop("render", None)
+            render_options = spec.pop("render_options", {})
+            if render is not None and (render != "spectrogram" or media_type != "image"):
+                raise ValueError("Only image columns support render: spectrogram")
+            if not isinstance(render_options, Mapping) or set(render_options) - {"cmap", "vmin", "vmax"}:
+                raise ValueError("render_options accepts cmap, vmin, and vmax")
+            if render_options and render is None:
+                raise ValueError("render_options requires render: spectrogram")
+            if media_type is None and spec:
+                raise ValueError("Plain table columns do not accept media constructor options")
+            for data_key in [key] + ([len_key] if len_key is not None else []):
+                batch = data_dict[data_key]
+                if isinstance(batch, (str, bytes, Mapping)):
+                    raise TypeError(f"Table data {data_key!r} must have a batch dimension")
+                size = len(batch)
+                if batch_size is None:
+                    batch_size = size
+                elif size != batch_size:
+                    raise ValueError(f"Inconsistent batch length for {data_key!r}: {size} != {batch_size}")
+            names.append(column_name)
+            specs.append((key, media_type, len_key, time_axis, render, render_options, spec))
+        if OmegaConf.is_config(sample_index):
+            sample_index = OmegaConf.to_container(sample_index, resolve=True)
+        indices = (list(range(batch_size)) if sample_index is None else
+                   sample_index if isinstance(sample_index, list) else [sample_index])
+        if not indices or any(isinstance(i, bool) or not isinstance(i, int) or i < 0 for i in indices):
+            raise ValueError("sample_index must select one or more nonnegative integer indices")
+        if any(i >= batch_size for i in indices):
+            raise IndexError("Table sample_index is outside the batch")
+        # Validate every selection before constructing media or emitting a table.
+        selected = []
+        for index in indices:
+            row = []
+            for key, media_type, len_key, axis, render, _, _ in specs:
+                value = self._select_media(data_dict, key, index, len_key, axis, media_type)
+                if render is not None and (getattr(value, "ndim", None) != 2 or 0 in value.shape):
+                    raise ValueError("render: spectrogram requires a nonempty 2-D selected sample")
+                row.append(value)
+            selected.append(row)
+        rows = []
+        for selected_row in selected:
+            row = []
+            for value, (_, media_type, _, axis, render, render_options, options) in zip(selected_row, specs):
+                if render is not None:
+                    value = self._render_spectrogram(value, axis, **render_options)
+                if media_type is None and hasattr(value, "tolist"):
+                    value = value.tolist()
+                row.append(self._construct_media(value, media_type, options))
+            rows.append(row)
+        table = self._wandb.Table(columns=names, data=rows)
+        self.log_media(name, table, global_step=global_step)
+
     def _metric_step(self) -> int:
         # wandb requires a single, monotonically-increasing step axis. Only
         # global_step is monotonic across both train and val; train_step and
@@ -697,6 +814,9 @@ class DistributedLogger:
 
     def log_media(self, *args, **kwargs):
         return self._forward_only_on_rank_zero("log_media", *args, **kwargs)
+
+    def log_table(self, *args, **kwargs):
+        return self._forward_only_on_rank_zero("log_table", *args, **kwargs)
 
     def log_artifact(self, local_path: str, artifact_path: str | None = None):
         return self._forward_only_on_rank_zero(

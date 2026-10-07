@@ -128,6 +128,7 @@ by the active logger; these methods fit this call shape:
 | `log_images` | `log_image_keys: [{key, len_key?}]` | One subplot per key: a line for 1-D, an image for 2-D, truncated to `len_key` |
 | `log_text` | `log_text_keys: [{key}]` | One line per key |
 | `log_media` | `key`, `media_type`, optional selection and W&B options | Rich media (W&B only) |
+| `log_table` | `name`, `columns`, optional `sample_index` | Aligned mixed-media table (W&B only) |
 
 `log_value` is not usable here — assessments call it themselves, and its
 signature is `(name, value)`, so routing it through this path raises. `log_artifact`
@@ -276,3 +277,73 @@ data-dictionary connections. For automatic PyTorch model capture, W&B exposes
 and only on rank zero. That installs execution hooks; capture depends on the
 executed model path and is separate from `log_media`. Use Plotly or HTML when you
 need a custom rendering of Hypatorch's configuration/data-flow graph.
+
+## Mixed-media tables
+
+Use `log_table` under an operation's `logging` list to assemble one table from
+aligned input/output keys. The tracking backend must provide `WandbLogger`.
+Console and MLflow ignore this optional hook. The trainer supplies `data_dict`
+and `global_step`; logging runs on the first validation batch, only on rank zero.
+
+```yaml
+logging:
+  - fn: log_table
+    name: val/examples
+    sample_index: [0, 2, 4]
+    columns:
+      - name: prediction
+        key: predicted_audio
+        media_type: audio
+        len_key: predicted_audio_length
+        sample_rate: 16000
+      - name: ground_truth_text
+        key: transcript
+      - name: ground_truth_audio
+        key: target_audio
+        media_type: audio
+        len_key: target_audio_length
+        sample_rate: 16000
+      - name: mel
+        key: predicted_mel
+        media_type: image
+        len_key: predicted_mel_length
+        time_axis: -1
+        render: spectrogram
+        render_options:
+          cmap: magma
+```
+
+`name` is the W&B table key. `columns` is a nonempty list with unique nonempty
+column names and exact `data_dict` keys. Column order is preserved. Every data
+key and length key must have the same batch length; no broadcasting occurs.
+`sample_index` defaults to `0` (one row), accepts a nonempty list (preserving order
+and repetitions), or `null` (all rows of this batch). All selected indices must
+exist. Missing keys, inconsistent batch lengths, invalid lengths, and invalid
+selections fail before media construction or table logging.
+
+Each column accepts `name`, `key`, optional `media_type`, `len_key`, `time_axis`,
+and W&B constructor options such as `sample_rate` or `caption`. Selection,
+trimming and audio orientation follow `log_media`. Omit `media_type` for ordinary
+text, numbers or prebuilt W&B objects. Selected numeric tensors/arrays become
+Python scalars or lists for plain cells. A plain column cannot carry media
+constructor options. Graph cells must contain prebuilt objects, with no
+`media_type`. Nested tables can be constructed with `media_type: table` and
+column names for their own rows.
+
+For image columns, `render: spectrogram` plots a **2-D selected sample** after
+trimming, with time horizontally and mel bins vertically (low bins at the bottom).
+`time_axis` defaults to `-1`; use `0` for `[time, mel]` samples. Remove any singleton
+channel dimension in model preprocessing. Empty or non-2-D samples fail.
+The renderer uses a headless Matplotlib canvas and does not apply logarithms,
+dB conversion, or amplitude normalization. Supply the desired values upstream.
+`render_options` accepts `cmap` (default `magma`), `vmin`, and `vmax`. Matplotlib
+scales colors per image unless limits are supplied; use fixed limits for visual
+comparisons. The image carries Frame and Mel bin labels, not physical units.
+Without `render`, image values go directly to W&B.
+
+Install the optional media dependencies in the training environment: Matplotlib
+and Pillow for spectrogram images, and soundfile for W&B audio from arrays.
+The logger creates a fresh table for each call and writes it with `commit=False`,
+sharing the step with metrics. It does not accumulate rows across batches or
+validation passes. In Python the same API is available as
+`logger.log_table(name, columns, data_dict=batch, sample_index=[0, 2])`.

@@ -501,3 +501,142 @@ def test_sample_list_images_preserve_order_and_options(monkeypatch):
                            media_type="image", caption="prediction")
     assert calls == [{"images": [("c.png", {"caption": "prediction"}),
                                   ("a.png", {"caption": "prediction"})]}]
+
+
+def test_hydra_mixed_media_table_aligns_rows(monkeypatch):
+    from hydra.utils import instantiate
+    from omegaconf import OmegaConf
+    import numpy as np
+
+    run = _FakeRun()
+    calls = []
+    run.log = lambda data, **kwargs: calls.append((data, kwargs))
+    sdk = _fake_wandb(run)
+    sdk.Audio = lambda value, **kwargs: ("audio", value, kwargs)
+    sdk.Image = lambda value, **kwargs: ("image", value, kwargs)
+    sdk.Table = lambda **kwargs: kwargs
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    config = OmegaConf.create('''
+_target_: hypatorch.core.Model
+submodules: {}
+operations:
+  decoder:
+    logging:
+      - fn: log_table
+        name: val/examples
+        sample_index: [1, 0, 1]
+        columns:
+          - {name: prediction, key: pred, media_type: audio, len_key: pred_len, sample_rate: 16000}
+          - {name: text, key: text}
+          - {name: target, key: target, media_type: audio, len_key: target_len, sample_rate: 16000}
+          - name: mel
+            key: mel
+            media_type: image
+            len_key: mel_len
+            render: spectrogram
+            render_options: {cmap: magma, vmin: 0, vmax: 20}
+''')
+    model = instantiate(config)
+    logger = WandbLogger()
+    logger.log_value("samples", 32)
+    data = {"pred": torch.arange(12.).reshape(2, 1, 6), "pred_len": [5, 3],
+            "target": torch.arange(16.).reshape(2, 8), "target_len": [6, 4],
+            "text": ["first", "second"], "mel": torch.arange(20.).reshape(2, 2, 5),
+            "mel_len": [4, 2]}
+    rendered = []
+    original_render = logger._render_spectrogram
+    def render(value, axis, **options):
+        rendered.append(value.copy())
+        return original_render(value, axis, **options)
+    monkeypatch.setattr(logger, "_render_spectrogram", render)
+    model.log_data(logger, 7, data)
+    payload, options = calls[0]
+    table = payload["val/examples"]
+    assert table["columns"] == ["prediction", "text", "target", "mel"]
+    assert payload["samples"] == 32 and payload["global_step"] == 7
+    assert options == {"step": 7, "commit": False}
+    for row, index, mel in zip(table["data"], [1, 0, 1], rendered, strict=True):
+        np.testing.assert_array_equal(row[0][1], data["pred"][index, :, :data["pred_len"][index]].numpy().T)
+        assert row[0][2] == {"sample_rate": 16000}
+        assert row[1] == data["text"][index]
+        assert row[2][1].shape == (data["target_len"][index],)
+        np.testing.assert_array_equal(mel, data["mel"][index, :, :data["mel_len"][index]].numpy())
+        assert row[3][0] == "image" and row[3][1].shape == (300, 600, 4)
+    model.log_data(LOGGER_MODULE.ConsoleLogger(), 7, {})
+    model.log_data(LOGGER_MODULE.MLflowLogger.__new__(LOGGER_MODULE.MLflowLogger), 7, {})
+    runtime = types.SimpleNamespace(is_rank_zero=False)
+    wrapped = LOGGER_MODULE.DistributedLogger(logger, runtime)
+    model.log_data(wrapped, 7, {})
+    assert len(calls) == 1
+    runtime.is_rank_zero = True
+    model.log_data(wrapped, 8, data)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("selection,expected", [(1, [[2, "b"]]), (None, [[1, "a"], [2, "b"]])])
+def test_table_plain_columns_and_row_selection(monkeypatch, selection, expected):
+    run = _FakeRun()
+    calls = []
+    run.log = lambda data, **kwargs: calls.append(data)
+    sdk = _fake_wandb(run)
+    sdk.Table = lambda **kwargs: kwargs
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    WandbLogger().log_table("examples", [{"name": "id", "key": "id"}, {"name": "text", "key": "text"}],
+                           data_dict={"id": torch.tensor([1, 2]), "text": ["a", "b"]}, sample_index=selection)
+    assert calls[0]["examples"]["data"] == expected
+
+
+@pytest.mark.parametrize("columns,data,indices,error", [
+    ([], {}, 0, ValueError),
+    ([{"name": "a", "key": "x"}, {"name": "a", "key": "x"}], {"x": [1]}, 0, ValueError),
+    ([{"name": "a", "key": "x"}], {}, 0, KeyError),
+    ([{"name": "a", "key": "x"}, {"name": "b", "key": "y"}], {"x": [1, 2], "y": [3]}, 0, ValueError),
+    ([{"name": "a", "key": "x", "len_key": "n", "media_type": "audio"}], {"x": torch.zeros(2, 4), "n": [2]}, 0, ValueError),
+    ([{"name": "a", "key": "x"}], {"x": [1]}, [0, 1], IndexError),
+    ([{"name": "a", "key": "x"}], {"x": [1]}, [], ValueError),
+    ([{"name": "a", "key": "x"}], {"x": [1]}, [True], ValueError),
+    ([{"name": "a", "key": "x", "render": "spectrogram"}], {"x": [1]}, 0, ValueError),
+    ([{"name": "a", "key": "x", "media_type": "image", "render": "spectrogram"}], {"x": torch.zeros(1, 4)}, 0, ValueError),
+    ([{"name": "a", "key": "x", "len_key": "n", "media_type": "audio"}], {"x": torch.zeros(2, 4), "n": [2, 5]}, [0, 1], ValueError),
+])
+def test_table_invalid_configuration_never_logs(monkeypatch, columns, data, indices, error):
+    run = _FakeRun()
+    constructed = []
+    sdk = _fake_wandb(run)
+    sdk.Audio = lambda *args, **kwargs: constructed.append(args)
+    sdk.Table = lambda **kwargs: constructed.append(kwargs)
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    with pytest.raises(error):
+        WandbLogger().log_table("examples", columns, data_dict=data, sample_index=indices)
+    assert not run.logged and not constructed
+
+
+def test_spectrogram_renderer_orients_time_axis():
+    import numpy as np
+    values = np.arange(15).reshape(3, 5)
+    renderer = WandbLogger._render_spectrogram
+    np.testing.assert_array_equal(renderer(values, -1), renderer(values.T, 0))
+
+
+def test_real_wandb_mixed_table(tmp_path, monkeypatch):
+    import wave
+    wandb = pytest.importorskip("wandb")
+    monkeypatch.setenv("WANDB_SILENT", "true")
+    path = tmp_path / "audio.wav"
+    with wave.open(str(path), "wb") as file:
+        file.setnchannels(1)
+        file.setsampwidth(2)
+        file.setframerate(16000)
+        file.writeframes(b'\x00\x00' * 160)
+    with wandb.init(mode="offline", dir=str(tmp_path), project="hypatorch-table-test") as run:
+        logger = WandbLogger()
+        columns = [{"name": "pred", "key": "audio", "media_type": "audio"},
+                   {"name": "text", "key": "text"},
+                   {"name": "target", "key": "audio", "media_type": "audio"},
+                   {"name": "mel", "key": "mel", "media_type": "image", "render": "spectrogram"}]
+        logger.log_table("examples", columns, data_dict={"audio": [str(path)], "text": ["hello"],
+                                                        "mel": torch.arange(12.).reshape(1, 3, 4)})
+        run.log({}, commit=True)
+        assert run.summary["examples"]["_type"] == "table-file"
+        assert run.summary["examples"]["nrows"] == 1
+        assert run.summary["examples"]["ncols"] == 4
