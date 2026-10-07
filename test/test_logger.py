@@ -3,6 +3,9 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+import torch
+
 
 LOGGER_PATH = Path(__file__).resolve().parents[1] / "hypatorch" / "logger.py"
 LOGGER_SPEC = importlib.util.spec_from_file_location("hypatorch_logger_for_test", LOGGER_PATH)
@@ -227,3 +230,274 @@ def test_wandb_logger_finalize_uses_status_exit_code():
             sys.modules["wandb"] = original
 
     assert run.finished == [1, 0]
+
+
+# Rich media must never enter scalar aggregation or commit a step before metrics.
+
+
+@pytest.mark.parametrize("media_type,class_name,options", [
+    ("image", "Image", {"masks": {"prediction": {}}, "boxes": {"truth": {}}}),
+    ("audio", "Audio", {"sample_rate": 16000}),
+    ("video", "Video", {"fps": 24}),
+    ("html", "Html", {"inject": False}),
+    ("object3d", "Object3D", {}),
+    ("molecule", "Molecule", {}),
+    ("histogram", "Histogram", {"num_bins": 32}),
+    ("plotly", "Plotly", {}),
+])
+def test_media_constructors_preserve_options_and_coordinates(monkeypatch, media_type, class_name, options):
+    run = _FakeRun()
+    calls = []
+    run.log = lambda data, **kwargs: calls.append((data, kwargs))
+    sdk = _fake_wandb(run)
+    constructed = object()
+    inputs = []
+    setattr(sdk, class_name, lambda value, **kwargs: inputs.append((value, kwargs)) or constructed)
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    logger = WandbLogger(log_every_n_steps=100)
+    logger.log_value("global_step", 7)
+    logger.log_value("samples", 32)
+    logger.log_media("val/example", "source", media_type=media_type, **options)
+    assert inputs == [("source", options)]
+    assert calls == [({"global_step": 7, "samples": 32, "val/example": constructed},
+                      {"step": 7, "commit": False})]
+    assert "val/example" not in logger._step_log
+    assert not logger._epoch_log
+
+
+def test_media_table_tensor_and_prebuilt_graph(monkeypatch):
+    run = _FakeRun()
+    calls = []
+    run.log = lambda data, **kwargs: calls.append((data, kwargs))
+    sdk = _fake_wandb(run)
+    sdk.Table = lambda **kwargs: kwargs
+    sdk.Audio = lambda value, **kwargs: value
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    logger = WandbLogger()
+    logger.log_media("examples", [[1]], media_type="table", columns=["id"])
+    assert calls[-1][0]["examples"] == {"data": [[1]], "columns": ["id"]}
+    logger.log_media("audio", torch.ones(8, requires_grad=True), media_type="audio", sample_rate=16000)
+    assert calls[-1][0]["audio"].shape == (8,)
+    graph = object()
+    logger.log_media("model", graph, global_step=9)
+    assert calls[-1] == ({"model": graph, "global_step": 9}, {"step": 9, "commit": False})
+    with pytest.raises(ValueError, match="Unsupported"):
+        logger.log_media("bad", media_type="unknown")
+    with pytest.raises(ValueError, match="constructed"):
+        logger.log_media("bad", media_type="graph")
+    with pytest.raises(ValueError, match="reserved"):
+        logger.log_media("samples", graph)
+    with pytest.raises(TypeError, match="media_type"):
+        logger.log_media("bad", graph, caption="unused")
+
+
+def test_distributed_media_is_constructed_only_on_rank_zero(monkeypatch):
+    run = _FakeRun()
+    calls = []
+    run.log = lambda *args, **kwargs: calls.append((args, kwargs))
+    sdk = _fake_wandb(run)
+    constructed = []
+    sdk.Audio = lambda *args, **kwargs: constructed.append(args) or "audio"
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    runtime = types.SimpleNamespace(is_rank_zero=False)
+    logger = LOGGER_MODULE.DistributedLogger(WandbLogger(), runtime)
+    logger.log_media("audio", [0], media_type="audio", sample_rate=16000)
+    assert not constructed and not calls
+    runtime.is_rank_zero = True
+    logger.log_media("audio", [0], media_type="audio", sample_rate=16000)
+    assert len(constructed) == len(calls) == 1
+    # Console / MLflow inherit the optional no-op without importing wandb.
+    LOGGER_MODULE.ConsoleLogger().log_media("audio", [0], media_type="audio")
+
+
+def test_real_wandb_graph_and_media_share_scalar_step(tmp_path, monkeypatch):
+    wandb = pytest.importorskip("wandb")
+    monkeypatch.setenv("WANDB_SILENT", "true")
+    with wandb.init(mode="offline", dir=str(tmp_path), project="hypatorch-test") as run:
+        logger = WandbLogger()
+        logger.log_value("global_step", 0)
+        logger.log_value("samples", 16)
+        graph = wandb.Graph()
+        source = graph.add_node(id="input", name="Input")
+        target = graph.add_node(id="output", name="Output")
+        graph.add_edge(source, target)
+        logger.log_media("model/graph", graph)
+        logger.log_media("distribution", [1, 2, 3], media_type="histogram")
+        logger.log_media("examples", [[1, "example"]], media_type="table", columns=["id", "text"])
+        logger.log_media("html_samples", data_dict={"html": ["<p>first</p>", "<p>second</p>"]},
+                         key="html", sample_index=[1, 0], media_type="html")
+        assert run.step == 0
+        logger.log_value("loss", 0.5)
+        logger.step_done()
+        # Explicit-step scalar reports also leave the W&B history row open.
+        assert run.step == 0
+        run.log({}, commit=True)
+        assert run.step == 1
+        assert run.summary["loss_step"] == 0.5
+        assert run.summary["model/graph"]["_type"] == "graph-file"
+        assert run.summary["html_samples"]["count"] == 2
+
+
+@pytest.mark.parametrize("selection", [1, [1], [1, 0, 1]])
+def test_hydra_model_logging_selects_trims_and_orients_audio(monkeypatch, selection):
+    from hydra.utils import instantiate
+    from omegaconf import OmegaConf
+    import numpy as np
+
+    run = _FakeRun()
+    calls = []
+    run.log = lambda data, **kwargs: calls.append((data, kwargs))
+    sdk = _fake_wandb(run)
+    audio = []
+    sdk.Audio = lambda value, **kwargs: audio.append((value, kwargs)) or "clip"
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    cfg = OmegaConf.create('''
+_target_: hypatorch.core.Model
+submodules: {}
+operations:
+  decoder:
+    logging:
+      - fn: log_media
+        name: val/prediction
+        media_type: audio
+        key: prediction
+        len_key: lengths
+        sample_index: 1
+        sample_rate: 16000
+''')
+    cfg.operations.decoder.logging[0].sample_index = selection
+    model = instantiate(cfg)
+    logger = WandbLogger()
+    logger.log_value("samples", 32)
+    waveforms = torch.arange(24, dtype=torch.float32).reshape(2, 2, 6).requires_grad_()
+    data = {"prediction": waveforms, "lengths": torch.tensor([5, 3])}
+    model.log_data(logger, 7, data)
+    indices = selection if isinstance(selection, list) else [selection]
+    for (clip, options), index in zip(audio, indices, strict=True):
+        np.testing.assert_array_equal(clip, waveforms[index, :, :data["lengths"][index]].detach().numpy().T)
+        assert options == {"sample_rate": 16000}
+    expected = ["clip"] * len(indices) if isinstance(selection, list) else "clip"
+    assert calls == [({"samples": 32, "global_step": 7, "val/prediction": expected},
+                      {"step": 7, "commit": False})]
+    assert waveforms.shape == (2, 2, 6) and waveforms.requires_grad
+
+    # Other backends can use exactly the same model config without W&B calls.
+    model.log_data(LOGGER_MODULE.ConsoleLogger(), 7, data)
+    runtime = types.SimpleNamespace(is_rank_zero=False)
+    model.log_data(LOGGER_MODULE.DistributedLogger(logger, runtime), 7, {})
+    assert len(audio) == len(indices)
+
+
+def test_hydra_media_whole_table_and_nested_options(monkeypatch):
+    from omegaconf import OmegaConf
+
+    run = _FakeRun()
+    calls = []
+    run.log = lambda data, **kwargs: calls.append(data)
+    sdk = _fake_wandb(run)
+    sdk.Table = lambda **kwargs: kwargs
+    sdk.Image = lambda value, **kwargs: kwargs
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    logger = WandbLogger()
+    rows = [[1, "one"], [2, "two"]]
+    logger.log_media(data_dict={"rows": rows}, key="rows", sample_index=None,
+                     media_type="table", columns=OmegaConf.create(["id", "text"]))
+    assert calls[-1]["rows"] == {"data": rows, "columns": ["id", "text"]}
+    logger.log_media(data_dict={"pictures": torch.zeros(1, 3, 4, 4)},
+                     key="pictures", media_type="image",
+                     boxes=OmegaConf.create({"truth": {"class_labels": {0: "cat"}}}))
+    assert type(calls[-1]["pictures"]["boxes"]) is dict
+    assert calls[-1]["pictures"]["boxes"]["truth"]["class_labels"] == {0: "cat"}
+
+
+@pytest.mark.parametrize("options,error", [
+    ({"key": "missing"}, KeyError),
+    ({"key": "audio", "sample_index": 2}, IndexError),
+    ({"key": "audio", "sample_index": -1}, ValueError),
+    ({"key": "audio", "value": [1]}, ValueError),
+    ({"key": "audio", "time_axis": 3, "len_key": "lengths"}, ValueError),
+    ({"key": "audio", "len_key": "too_long"}, ValueError),
+    ({"key": "audio", "len_key": "fractional"}, TypeError),
+    ({"len_key": "lengths"}, ValueError),
+])
+def test_hydra_media_invalid_selection_fails_before_logging(monkeypatch, options, error):
+    run = _FakeRun()
+    monkeypatch.setitem(sys.modules, "wandb", _fake_wandb(run))
+    logger = WandbLogger()
+    with pytest.raises(error):
+        logger.log_media(data_dict={"audio": torch.zeros(1, 4), "lengths": [2],
+                                    "too_long": [5], "fractional": [2.5]}, **options)
+    assert not run.logged
+
+
+@pytest.mark.parametrize("shape,time_axis,expected", [
+    ((1, 6), -1, (3,)),
+    ((1, 1, 6), -1, (3, 1)),
+    ((1, 6, 2), 0, (3, 2)),
+])
+def test_hydra_audio_layouts(monkeypatch, shape, time_axis, expected):
+    run = _FakeRun()
+    sdk = _fake_wandb(run)
+    clips = []
+    sdk.Audio = lambda value, **kwargs: clips.append(value)
+    run.log = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    logger = WandbLogger()
+    logger.log_media(data_dict={"x": torch.zeros(shape), "n": [3]}, key="x",
+                     len_key="n", time_axis=time_axis, media_type="audio", sample_rate=16000)
+    assert clips[0].shape == expected
+
+
+@pytest.mark.parametrize("selection,media_type,key,error", [
+    ([], "audio", "x", ValueError),
+    ([0, -1], "audio", "x", ValueError),
+    ([0, True], "audio", "x", ValueError),
+    ([0, 1.5], "audio", "x", ValueError),
+    ([0, None], "audio", "x", ValueError),
+    ([0, 2], "audio", "x", IndexError),
+    ([0], "table", "x", ValueError),
+    ([0], "graph", "x", ValueError),
+    ([0], "plotly", "x", ValueError),
+    ([0], "histogram", "x", ValueError),
+    ([0], None, "x", ValueError),
+    ([0], "audio", None, ValueError),
+])
+def test_sample_list_rejects_invalid_requests_without_partial_logs(monkeypatch, selection, media_type, key, error):
+    run = _FakeRun()
+    sdk = _fake_wandb(run)
+    constructed = []
+    sdk.Audio = lambda *args, **kwargs: constructed.append(args)
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    logger = WandbLogger()
+    with pytest.raises(error):
+        logger.log_media("example", data_dict={"x": torch.zeros(2, 4)}, key=key,
+                         sample_index=selection, media_type=media_type)
+    assert not constructed
+    assert not run.logged
+
+
+def test_sample_list_invalid_later_length_is_atomic(monkeypatch):
+    run = _FakeRun()
+    sdk = _fake_wandb(run)
+    constructed = []
+    sdk.Audio = lambda *args, **kwargs: constructed.append(args)
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    with pytest.raises(ValueError, match="length"):
+        WandbLogger().log_media(data_dict={"x": torch.zeros(2, 4), "n": [2, 5]},
+                               key="x", len_key="n", sample_index=[0, 1], media_type="audio")
+    assert not constructed and not run.logged
+
+
+def test_sample_list_images_preserve_order_and_options(monkeypatch):
+    from omegaconf import OmegaConf
+    run = _FakeRun()
+    calls = []
+    run.log = lambda data, **kwargs: calls.append(data)
+    sdk = _fake_wandb(run)
+    sdk.Image = lambda value, **kwargs: (value, kwargs)
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    WandbLogger().log_media(data_dict={"images": ["a.png", "b.png", "c.png"]},
+                           key="images", sample_index=OmegaConf.create([2, 0]),
+                           media_type="image", caption="prediction")
+    assert calls == [{"images": [("c.png", {"caption": "prediction"}),
+                                  ("a.png", {"caption": "prediction"})]}]

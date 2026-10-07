@@ -17,6 +17,8 @@ How to declare a model, write a submodule, and configure losses, optimizers and
 the trainer: [`hypatorch/agent_docs/`](hypatorch/agent_docs/OVERVIEW.md). How the
 machinery works underneath: [`docs/`](docs/README.md).
 
+W&B media logging: [rich media](hypatorch/agent_docs/losses-and-metrics.md#wb-rich-media).
+
 ## Acknowledgements
 
 <img src="misc/acknowledgement/EFRE_Sachsen_EN.png" height="90">

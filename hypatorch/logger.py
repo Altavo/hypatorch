@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
 import html
+import operator
 from pathlib import Path
 
 import torch
+from omegaconf import OmegaConf
 
 
 class DataLogger(ABC):
@@ -26,6 +28,12 @@ class DataLogger(ABC):
 
     def log_text(self, *args, **kwargs):
         del args, kwargs
+
+    def log_media(self, name=None, value=None, *, media_type=None, global_step=None,
+                  data_dict=None, key=None, sample_index=0, len_key=None,
+                  time_axis=-1, **kwargs):
+        """Optional rich-media hook; unsupported backends ignore it."""
+        del name, value, media_type, global_step, data_dict, key, sample_index, len_key, time_axis, kwargs
 
     def log_artifact(self, local_path: str, artifact_path: str | None = None):
         del local_path, artifact_path
@@ -303,6 +311,19 @@ class MLflowLogger(DataLogger):
 
 
 class WandbLogger(DataLogger):
+    _MEDIA_TYPES = {
+        "image": "Image",
+        "audio": "Audio",
+        "video": "Video",
+        "html": "Html",
+        "object3d": "Object3D",
+        "molecule": "Molecule",
+        "table": "Table",
+        "histogram": "Histogram",
+        "plotly": "Plotly",
+        "graph": "Graph",
+    }
+
     def __init__(self, log_every_n_steps: int = 1):
         super().__init__(log_every_n_steps=log_every_n_steps)
         try:
@@ -325,6 +346,131 @@ class WandbLogger(DataLogger):
         # `samples`) no longer distort the axis.
         self._run.define_metric("samples")
         self._run.define_metric("*", step_metric="samples")
+
+    # These W&B types serialize lists as a single media collection.
+    _BATCH_MEDIA_TYPES = frozenset({"audio", "image", "video", "html", "object3d", "molecule"})
+
+    @staticmethod
+    def _select_media(data_dict, key, sample_index, len_key, time_axis, media_type):
+        value = data_dict[key]
+        if sample_index is not None:
+            if isinstance(sample_index, bool) or not isinstance(sample_index, int) or sample_index < 0:
+                raise ValueError("sample_index must be a nonnegative integer or None")
+            value = value[sample_index]
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        if len_key is not None and not hasattr(value, "shape"):
+            raise TypeError("len_key requires tensor or array media")
+        if len_key is not None or (media_type == "audio" and hasattr(value, "shape")):
+            ndim = len(value.shape)
+            axis = operator.index(time_axis)
+            if not -ndim <= axis < ndim:
+                raise ValueError("time_axis is outside the selected media dimensions")
+            axis %= ndim
+            if len_key is not None:
+                length = data_dict[len_key]
+                if sample_index is not None:
+                    length = length[sample_index]
+                if isinstance(length, torch.Tensor):
+                    length = length.item()
+                length = operator.index(length)
+                if not 0 <= length <= value.shape[axis]:
+                    raise ValueError("Media length is outside the selected time dimension")
+                slices = [slice(None)] * ndim
+                slices[axis] = slice(length)
+                value = value[tuple(slices)]
+            if media_type == "audio":
+                # W&B audio expects [time] or [time, channels].
+                value = value.transpose([axis] + [i for i in range(ndim) if i != axis])
+        return value
+
+    def _construct_media(self, value, media_type, kwargs):
+        if OmegaConf.is_config(value):
+            value = OmegaConf.to_container(value, resolve=True)
+        kwargs = {
+            k: OmegaConf.to_container(v, resolve=True) if OmegaConf.is_config(v) else v
+            for k, v in kwargs.items()
+        }
+        if media_type is None:
+            if kwargs:
+                raise TypeError("Constructor options require media_type")
+        else:
+            if media_type not in self._MEDIA_TYPES:
+                raise ValueError(f"Unsupported media_type: {media_type!r}")
+            if media_type == "graph":
+                raise ValueError("Pass a constructed wandb.Graph without media_type")
+            constructor = getattr(self._wandb, self._MEDIA_TYPES[media_type])
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu().numpy()
+            if media_type == "table":
+                if value is not None:
+                    kwargs["data"] = value
+                value = constructor(**kwargs)
+            elif value is None:
+                value = constructor(**kwargs)
+            else:
+                value = constructor(value, **kwargs)
+        return value
+
+    def log_media(self, name=None, value=None, *, media_type=None, global_step=None,
+                  data_dict=None, key=None, sample_index=0, len_key=None,
+                  time_axis=-1, **kwargs):
+        """Log rich media without scalar averaging or cadence throttling.
+
+        Hydra selects data_dict[key][sample_index]; None selects the whole
+        value. A nonempty list selects an ordered collection of batchable media.
+        Each sample is independently trimmed using len_key and time_axis.
+        Selected audio moves its time axis first. Direct values keep their shape.
+        Constructor options are forwarded to W&B. Omit media_type for prebuilt
+        objects, including graphs. The W&B step remains open (commit=False).
+        """
+        if OmegaConf.is_config(sample_index):
+            sample_index = OmegaConf.to_container(sample_index, resolve=True)
+        multiple = isinstance(sample_index, list)
+        if multiple:
+            if key is None:
+                raise ValueError("A sample_index list requires key and data_dict")
+            if not sample_index or any(
+                isinstance(i, bool) or not isinstance(i, int) or i < 0
+                for i in sample_index
+            ):
+                raise ValueError("sample_index must be a nonempty list of nonnegative integers")
+            if media_type not in self._BATCH_MEDIA_TYPES:
+                raise ValueError(
+                    "A sample_index list supports only audio, image, video, html, object3d, or molecule"
+                )
+        if key is not None:
+            if data_dict is None:
+                raise ValueError("key requires data_dict")
+            if value is not None:
+                raise ValueError("Pass either value or key, not both")
+            indices = sample_index if multiple else [sample_index]
+            # Select all items before constructing or logging any media, so an
+            # invalid later index or length cannot produce a partial log entry.
+            values = [
+                self._select_media(data_dict, key, i, len_key, time_axis, media_type)
+                for i in indices
+            ]
+            if name is None:
+                name = key
+        elif len_key is not None:
+            raise ValueError("len_key requires key")
+        else:
+            values = [value]
+        if not isinstance(name, str) or not name:
+            raise ValueError("Media requires a nonempty name or key")
+        if name in self._COORDINATE_KEYS:
+            raise ValueError(f"Media name is a reserved progress coordinate: {name}")
+        converted = [self._construct_media(v, media_type, kwargs) for v in values]
+        value = converted if multiple else converted[0]
+        payload = self._progress_coordinates()
+        payload[name] = value
+        step = self._metric_step() if global_step is None else global_step
+        if global_step is not None:
+            payload["global_step"] = global_step
+        # Leave this step open for more media and its scalar report. Committing
+        # here would cause subsequent writes at this step to be dropped by W&B.
+        self._run.log(payload, step=step, commit=False)
 
     def _metric_step(self) -> int:
         # wandb requires a single, monotonically-increasing step axis. Only
@@ -548,6 +694,9 @@ class DistributedLogger:
 
     def log_text(self, *args, **kwargs):
         return self._forward_only_on_rank_zero("log_text", *args, **kwargs)
+
+    def log_media(self, *args, **kwargs):
+        return self._forward_only_on_rank_zero("log_media", *args, **kwargs)
 
     def log_artifact(self, local_path: str, artifact_path: str | None = None):
         return self._forward_only_on_rank_zero(

@@ -36,6 +36,17 @@
   "hypatorch.logger.WandbLogger": [
     "log_every_n_steps"
   ],
+  "hypatorch.logger.WandbLogger.log_media": [
+    "data_dict",
+    "global_step",
+    "key",
+    "len_key",
+    "media_type",
+    "name",
+    "sample_index",
+    "time_axis",
+    "value"
+  ],
   "hypatorch.losses.MAE_Loss": [
     "inputs",
     "weight"
