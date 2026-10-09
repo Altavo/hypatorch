@@ -32,6 +32,7 @@ class _Recorder:
         trainer._finalize_last_checkpoint = lambda **kwargs: None
         trainer.get_rng_state_dict = lambda: {}
         trainer.model = _NullModel()
+        trainer.state_model = trainer.model
         trainer.optimizers = {}
         trainer.schedulers = {}
         trainer.gradient_clipping = None
@@ -41,6 +42,9 @@ class _Recorder:
 
 
 class _NullModel:
+    def iter_logging_entries(self):
+        return iter(())
+
     def train(self):
         return self
 

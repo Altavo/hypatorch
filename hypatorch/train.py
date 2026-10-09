@@ -5,13 +5,14 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import BatchSampler, DataLoader, IterableDataset, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
 from .core import Model
 from .distributed import DistributedRuntime
 from .logger import DistributedLogger
 from .utils import shared_dict, update_output
+from .validation_logging import validation_collectors
 
 
 class Callback:
@@ -728,6 +729,38 @@ class Trainer:
 
         return output_dict, metrics, step, global_step
 
+    def _validate_full_validation(self, dataset, loader_args=None):
+        """Reject execution/loader settings that cannot promise a complete pass.
+
+        An iterable defines its own stream; its natural exhaustion is the
+        coverage boundary. Map-style loaders must visit each dataset position
+        once, using the standard sequential or non-replacement random sampler.
+        """
+        if self.distributed.enabled:
+            raise ValueError("Validation-pass histograms currently require single-process validation")
+        if self.max_val_samples is not None:
+            raise ValueError("Validation-pass histograms require max_val_samples=None (no cap)")
+        if dataset is None:
+            raise ValueError("Validation-pass histograms require a validation dataset")
+        if not isinstance(dataset, DataLoader):
+            settings = loader_args or {}
+            if settings.get("drop_last") or settings.get("sampler") is not None or settings.get("batch_sampler") is not None:
+                raise ValueError("Full validation requires drop_last=False and no custom sampler")
+            return None
+        if dataset.drop_last or getattr(dataset.batch_sampler, "drop_last", False):
+            raise ValueError("Full validation requires drop_last=False")
+        if type(dataset.batch_sampler) is not BatchSampler:
+            raise ValueError("Full validation requires standard automatic batching")
+        if isinstance(dataset.dataset, IterableDataset):
+            return None
+        expected = len(dataset.dataset)
+        sampler = dataset.sampler
+        if type(sampler) is SequentialSampler:
+            return expected
+        if type(sampler) is RandomSampler and not sampler.replacement and sampler.num_samples == expected:
+            return expected
+        raise ValueError("Full validation requires a sampler that visits every dataset position once")
+
     def epoch(
         self,
         mode,
@@ -742,6 +775,13 @@ class Trainer:
     ):
         state_model = self._stateful_model(model)
         operations = state_model.operations.keys()
+        collectors = validation_collectors(state_model.iter_logging_entries()) if mode == "val" else []
+        expected_samples = self._validate_full_validation(dataset) if collectors else None
+        if collectors and self.should_stop:
+            raise RuntimeError("Cannot start full-pass histogram collection after a stop request")
+        evaluated_samples = 0
+        validation_complete = False
+        histogram_step = self.global_step
 
         if optimizers:
             for operation_name in operations:
@@ -754,8 +794,10 @@ class Trainer:
         val_samples_seen = 0
         with self.distributed.join_context(model, enable=mode == "train"):
             for epoch_step, input_dict in enumerate(dataset):
-                count_samples = mode == "train" or cap_val_samples
+                count_samples = mode == "train" or cap_val_samples or bool(collectors)
                 batch_size = self._infer_batch_size(input_dict) if count_samples else 0
+                if collectors and batch_size <= 0:
+                    raise ValueError("Full-pass histograms require an identifiable nonempty batch dimension")
                 output_dict, metrics, step, global_step = self.step(
                     mode=mode,
                     model=model,
@@ -767,6 +809,13 @@ class Trainer:
                     epoch_step=epoch_step,
                 )
                 del metrics, step
+
+                if collectors:
+                    logging_data = shared_dict(input_dict, output_dict)
+                    for collector in collectors:
+                        collector.update(logging_data, batch_size)
+                    evaluated_samples += batch_size
+                    histogram_step = global_step
 
                 if logger and epoch_step == 0 and mode == "val":
                     state_model.log_data(
@@ -789,9 +838,22 @@ class Trainer:
 
                 if self.should_stop:
                     break
+            else:
+                validation_complete = True
 
             if mode == "train" and optimizers:
                 self._flush_pending_gradients()
+
+        if collectors:
+            if not validation_complete or self.should_stop:
+                raise RuntimeError("Validation was interrupted; no full-pass histogram was logged")
+            if expected_samples is not None and evaluated_samples != expected_samples:
+                raise RuntimeError(
+                    f"Incomplete validation coverage: evaluated {evaluated_samples} of {expected_samples} samples"
+                )
+            if logger is not None:
+                for collector in collectors:
+                    collector.emit(logger, histogram_step)
 
         for operation_name in operations:
             if schedulers and operation_name in schedulers:
@@ -929,6 +991,10 @@ class Trainer:
         checkpoint_path=None,
     ):
         logger = logger or self.logger
+        # Validate on every rank before training, not only in rank-zero's
+        # validation branch, so unsupported execution cannot strand a barrier.
+        if validation_collectors(self.state_model.iter_logging_entries()):
+            self._validate_full_validation(val_dataset, loader_args)
 
         max_epochs = self.max_epochs
         if max_epochs is None:

@@ -86,3 +86,13 @@ inside them.
   validation set still pays for validation first.
 - `save_last` writes on rank zero only; a distributed run where rank zero exits
   early leaves no final checkpoint.
+
+## Full-pass logging
+
+Operation logging may configure [full-pass histograms](losses-and-metrics.md#histograms-over-a-complete-validation-pass).
+The trainer creates collectors at validation start, updates them on every batch,
+and emits only after natural exhaustion and coverage checks, before the scalar
+epoch report. This requires single-process execution and uncapped validation
+(`max_val_samples: null`); known dropping/subset loaders are rejected. Interrupts
+abort collection without publishing partial histograms. No consumer-specific
+training integration is required; ordinary first-batch logging is unchanged.

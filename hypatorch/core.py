@@ -530,29 +530,26 @@ class Model( torch.nn.Module ):
         return self
 
     
+    def iter_logging_entries(self):
+        """Yield configured logging entries in operation order."""
+        for operation_name in self.operations:
+            if not self.logging:
+                continue
+            entries = self.logging[operation_name]
+            if entries:
+                if not isinstance(entries, (list, ListConfig)):
+                    entries = [entries]
+                yield from entries
+
     def log_data(self, logger, step, data_dict):
-
-        for operation_name in self.operations.keys():
-            if self.logging:
-                loggings = self.logging[ operation_name ]
-                if loggings:
-                    if not isinstance( loggings, list ) and not isinstance( loggings, ListConfig ):
-                        loggings = [ loggings ]
-                    
-                    for log in loggings:
-
-                        fn_name = log[ 'fn' ]
-                        fn_args = { k: v for k, v in log.items() if k != 'fn' }
-
-                        log_fn = getattr(
-                            logger,
-                            fn_name,
-                        )
-                        log_fn(
-                            data_dict = data_dict,
-                            global_step = step,
-                            **fn_args,
-                            )        
+        for entry in self.iter_logging_entries():
+            # Pass-level entries are collected and emitted by the trainer.
+            if entry.get("fn") == "log_histogram":
+                continue
+            fn_args = {key: value for key, value in entry.items() if key != "fn"}
+            getattr(logger, entry["fn"])(
+                data_dict=data_dict, global_step=step, **fn_args,
+            )
 
     def compute_loss(self, x, operation_name, mode, logger=None):
         loss_dict = self._handle_assessments(

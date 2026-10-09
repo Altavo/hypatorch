@@ -43,6 +43,11 @@ class DataLogger(ABC):
         """Optional table hook; unsupported backends ignore it."""
         del name, columns, data_dict, sample_index, global_step
 
+    def log_histogram(self, name, *, counts, bin_edges, total_count, invalid_count,
+                      underflow_count, overflow_count, global_step=None):
+        """Optional sink for a completed validation histogram."""
+        del name, counts, bin_edges, total_count, invalid_count, underflow_count, overflow_count, global_step
+
     def finalize(self, status: str):
         del status
 
@@ -589,6 +594,23 @@ class WandbLogger(DataLogger):
         table = self._wandb.Table(columns=names, data=rows)
         self.log_media(name, table, global_step=global_step)
 
+    def log_histogram(self, name, *, counts, bin_edges, total_count, invalid_count,
+                      underflow_count, overflow_count, global_step=None):
+        """Publish precomputed counts and coverage diagnostics in one W&B row."""
+        payload = self._progress_coordinates()
+        payload[name] = self._wandb.Histogram(np_histogram=(counts, bin_edges))
+        for key, value in {
+            "total_count": total_count,
+            "invalid_count": invalid_count,
+            "underflow_count": underflow_count,
+            "overflow_count": overflow_count,
+        }.items():
+            payload[f"{name}/{key}"] = value
+        step = self._metric_step() if global_step is None else global_step
+        if global_step is not None:
+            payload["global_step"] = global_step
+        self._run.log(payload, step=step, commit=False)
+
     def _metric_step(self) -> int:
         # wandb requires a single, monotonically-increasing step axis. Only
         # global_step is monotonic across both train and val; train_step and
@@ -817,6 +839,9 @@ class DistributedLogger:
 
     def log_table(self, *args, **kwargs):
         return self._forward_only_on_rank_zero("log_table", *args, **kwargs)
+
+    def log_histogram(self, *args, **kwargs):
+        return self._forward_only_on_rank_zero("log_histogram", *args, **kwargs)
 
     def log_artifact(self, local_path: str, artifact_path: str | None = None):
         return self._forward_only_on_rank_zero(

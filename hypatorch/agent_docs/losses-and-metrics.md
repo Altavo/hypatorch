@@ -102,9 +102,10 @@ suffix. Mode namespacing is automatic; uniqueness within a mode is yours.
 
 ## Custom logging entries
 
-An operation may declare `logging` entries for what a scalar cannot carry. They
-are called once per validation pass, on its **first batch only** — never during
-training. `log_images` and `log_text` render the **first sample**; `log_media`
+An operation may declare `logging` entries for what a scalar cannot carry.
+Ordinary entries run on the **first validation batch only**, never during training.
+`log_histogram` always collects every validation batch and
+emits once after the complete pass (see below). `log_images` and `log_text` render the **first sample**; `log_media`
 lets you choose a sample or the whole value.
 
 ```yaml
@@ -119,7 +120,7 @@ lets you choose a sample or the whole value.
           - key: transcript
 ```
 
-`fn` names a method on the active logger and every other key is forwarded to it,
+For ordinary entries, `fn` names a method on the active logger and every other key is forwarded to it,
 together with `data_dict` and `global_step`. The set of usable methods is fixed
 by the active logger; these methods fit this call shape:
 
@@ -347,3 +348,101 @@ The logger creates a fresh table for each call and writes it with `commit=False`
 sharing the step with metrics. It does not accumulate rows across batches or
 validation passes. In Python the same API is available as
 `logger.log_table(name, columns, data_dict=batch, sample_index=[0, 2])`.
+
+## Histograms over a complete validation pass
+
+Use this when every evaluated example must contribute one numeric observation,
+without retaining all observations or reducing them to batch averages.
+This feature is single-process only. It consumes ordinary model inputs/outputs;
+it does not compute a metric or depend on a consumer's training routine.
+
+```yaml
+logging:
+  - fn: log_histogram
+    name: val/score_distribution
+    key: score_per_sample
+    bins:
+      range: [0.0, 2.0]
+      count: 100
+```
+
+The entry belongs under an operation's `logging`, just like media and tables.
+`name` must be unique across pass-level histograms in all operations and cannot
+be a progress coordinate. `key` selects an exact key from merged model inputs
+and outputs after all operations have run. It must contain a real numeric tensor,
+array or sequence of shape `[batch]` or `[batch, 1]`: one observation per input
+example. Scalars, sequence-valued metrics, boolean/complex values and mismatched
+batch lengths fail. Produce unreduced per-example values as model outputs;
+scalar assessments and their existing logging remain independent.
+
+`bins` accepts exactly one of two forms. For evenly spaced bins, provide
+`range: [lower, upper]` and an integer `count` between 1 and 512. Endpoints must
+be finite real numbers with `lower < upper`. For custom spacing:
+
+```yaml
+bins:
+  edges: [0.0, 0.1, 0.25, 0.5, 1.0, 2.0]
+```
+
+`edges` contains 2–513 finite, strictly increasing real numbers (1–512 bins).
+Mixed forms, missing fields, unknown keys, boolean values, and noninteger counts
+are rejected. No range is inferred from the observations. Both forms resolve to
+fixed float64 edges before validation starts; ranges too narrow to produce
+distinct edges at that precision are rejected. The old top-level `bin_edges`
+configuration is not accepted. The backend sink still receives resolved edges.
+
+Intervals include their left edge and exclude their right edge, except the final
+bin includes its right edge. Fixed edges make passes comparable.
+The entry requires exactly `fn`, `name`, `key` and `bins`.
+No sample selection, implicit range, padding removal, or subsampling is applied.
+`log_histogram` inherently covers the full validation pass; there is no
+`aggregate` option. Supplying the obsolete option raises a configuration error.
+
+The collector holds integer counts on CPU and releases each batch's values;
+persistent memory depends on bin count, not validation dataset size. It does not
+retain computation graphs. It is recreated for every validation pass.
+
+### Coverage contract
+
+- Set `trainer.max_val_samples: null` (negative values also normalize to no cap).
+  Any active cap is rejected, even if larger than the dataset.
+- Distributed execution is rejected before entering training/validation.
+- Validation loaders must use `drop_last: false` and standard automatic batching.
+  For map-style datasets, only the standard sequential sampler or a standard
+  non-replacement random sampler covering every dataset position is accepted.
+  Custom batch samplers, subset/replacement samplers and unbatched loaders fail.
+- The map-style evaluated sample count must equal the dataset length. For
+  iterable datasets, full coverage means **natural exhaustion of the supplied
+  stream**. Hypatorch cannot detect samples hidden by upstream filters, truncation,
+  repetition, or missing data. It does not infer an external dataset's cardinality
+  or deduplicate IDs. Collation must preserve one output example per input example.
+- An interrupt, stop request, missing key, bad shape or loader exception aborts
+  the pass: no pass-level histogram is published, and its local state is discarded.
+  A graceful-stop request during collection therefore raises an error rather than
+  publishing a partial full-pass result. Earlier ordinary media logs may remain.
+- An empty, naturally exhausted validation dataset emits zero counts and
+  `total_count=0`, not a fabricated observation.
+
+### Reporting
+
+`WandbLogger` receives the completed counts via its `log_histogram` sink, in one
+`commit=False` call before the scalar epoch report, using the final validation
+step and existing progress coordinates. For an empty pass it uses the current
+trainer step. Reporting is not throttled by `log_every_n_steps`.
+It logs the histogram under `name` and these companion metrics:
+
+| Key suffix (appended to `name/`) | Meaning |
+| --- | --- |
+| `total_count` | All observed examples, including invalid values and outliers |
+| `invalid_count` | NaN and positive/negative infinity; excluded from bins |
+| `underflow_count` | Finite values below the first edge |
+| `overflow_count` | Finite values above the final edge |
+
+The invariant is `sum(bin_counts) + invalid_count + underflow_count + overflow_count
+== total_count`. Outliers are **not clipped into the end bins**; they are reported
+separately. The W&B plot alone shows only in-range values, so inspect the counters.
+The counts are not epoch-averaged scalar metrics. Other current backends inherit
+a no-op sink; the coverage checks still apply, but they do not render histograms.
+
+This feature does not change first-batch audio/image/table selection. Collection
+of selected media across validation batches is a separate extension.

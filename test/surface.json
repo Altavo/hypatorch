@@ -36,6 +36,16 @@
   "hypatorch.logger.WandbLogger": [
     "log_every_n_steps"
   ],
+  "hypatorch.logger.WandbLogger.log_histogram": [
+    "bin_edges",
+    "counts",
+    "global_step",
+    "invalid_count",
+    "name",
+    "overflow_count",
+    "total_count",
+    "underflow_count"
+  ],
   "hypatorch.logger.WandbLogger.log_media": [
     "data_dict",
     "global_step",
@@ -97,5 +107,10 @@
     "save_last",
     "seed",
     "strategy"
+  ],
+  "hypatorch.validation_logging.HistogramCollector": [
+    "bins",
+    "key",
+    "name"
   ]
 }
