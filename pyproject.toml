@@ -40,6 +40,8 @@ build = [
   "twine",
 ]
 test = [
+  "numpy",
+  "matplotlib",
   "pytest",
   "pytest-cov",
 ]

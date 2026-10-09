@@ -880,6 +880,8 @@ example = [
     { name = "wandb" },
 ]
 test = [
+    { name = "matplotlib" },
+    { name = "numpy" },
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
@@ -902,6 +904,8 @@ example = [
     { name = "wandb" },
 ]
 test = [
+    { name = "matplotlib" },
+    { name = "numpy" },
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
