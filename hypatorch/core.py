@@ -544,7 +544,7 @@ class Model( torch.nn.Module ):
     def log_data(self, logger, step, data_dict):
         for entry in self.iter_logging_entries():
             # Pass-level entries are collected and emitted by the trainer.
-            if entry.get("fn") == "log_histogram":
+            if entry.get("fn") in {"log_histogram", "log_distribution"}:
                 continue
             fn_args = {key: value for key, value in entry.items() if key != "fn"}
             getattr(logger, entry["fn"])(

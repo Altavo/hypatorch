@@ -43,6 +43,10 @@ class DataLogger(ABC):
         """Optional table hook; unsupported backends ignore it."""
         del name, columns, data_dict, sample_index, global_step
 
+    def log_distribution(self, name, *, values, global_step=None):
+        """Optional sink for finite per-example values from a completed pass."""
+        del name, values, global_step
+
     def log_histogram(self, name, *, counts, bin_edges, total_count, invalid_count,
                       underflow_count, overflow_count, global_step=None):
         """Optional sink for a completed validation histogram."""
@@ -594,6 +598,29 @@ class WandbLogger(DataLogger):
         table = self._wandb.Table(columns=names, data=rows)
         self.log_media(name, table, global_step=global_step)
 
+    def log_distribution(self, name, *, values, global_step=None):
+        """Log a fresh raw-value table and conventional W&B histogram per pass."""
+        if not isinstance(name, str) or not name or name in self._COORDINATE_KEYS:
+            raise ValueError("Distribution name must be nonempty and not a progress coordinate")
+        import numpy as np
+
+        # Custom charts query the artifact-backed table. MAX_ROWS only limits
+        # the legacy media preview; enforce the artifact limit to avoid truncation.
+        limit = self._wandb.Table.MAX_ARTIFACT_ROWS
+        if len(values) > limit:
+            raise ValueError(f"Distribution has {len(values)} values, exceeding W&B table limit {limit}")
+        array = np.asarray(values)
+        if array.ndim != 1 or array.dtype.kind not in "iuf" or not np.isfinite(array).all():
+            raise ValueError("Distribution values must be a finite real numeric vector")
+        table = self._wandb.Table(columns=["value"], data=[[float(value)] for value in array])
+        chart = self._wandb.plot.histogram(table, "value", title=name)
+        payload = self._progress_coordinates()
+        payload[name] = chart
+        if global_step is not None:
+            payload["global_step"] = global_step
+        step = self._metric_step() if global_step is None else global_step
+        self._run.log(payload, step=step, commit=False)
+
     def log_histogram(self, name, *, counts, bin_edges, total_count, invalid_count,
                       underflow_count, overflow_count, global_step=None):
         """Publish precomputed counts and coverage diagnostics in one W&B row."""
@@ -839,6 +866,9 @@ class DistributedLogger:
 
     def log_table(self, *args, **kwargs):
         return self._forward_only_on_rank_zero("log_table", *args, **kwargs)
+
+    def log_distribution(self, *args, **kwargs):
+        return self._forward_only_on_rank_zero("log_distribution", *args, **kwargs)
 
     def log_histogram(self, *args, **kwargs):
         return self._forward_only_on_rank_zero("log_histogram", *args, **kwargs)

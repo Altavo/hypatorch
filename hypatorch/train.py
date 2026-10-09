@@ -1154,7 +1154,7 @@ class Trainer:
     def predict(self, model: Model, dataset, loader_args=None, *, logger=None):
         """Run prediction callbacks, optionally logging configured model outputs.
 
-        An explicit logger enables full-pass histogram collection and first-batch
+        An explicit logger enables full-pass histogram/distribution collection and first-batch
         media/table logging. Omitting it preserves callback-only prediction, even
         if this trainer has a training logger. No losses or metric assessments,
         optimizers, or checkpoints run in either case. Callbacks are optional.

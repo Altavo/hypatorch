@@ -452,3 +452,51 @@ a no-op sink; the coverage checks still apply, but they do not render histograms
 
 This feature does not change first-batch audio/image/table selection. Collection
 of selected media across validation batches is a separate extension.
+
+
+## Raw-value distribution snapshots
+
+Use `log_distribution` for a conventional values-versus-counts histogram backed
+by a fresh W&B table for each complete validation or prediction pass:
+
+```yaml
+logging:
+  - fn: log_distribution
+    name: evaluation/cer_distribution
+    key: cer
+    max_values: 20000
+  - fn: log_distribution
+    name: evaluation/wer_distribution
+    key: wer
+```
+
+Place these entries under the operation producing the unreduced per-example
+values. `key` selects merged model inputs/outputs and must contain one finite
+real scalar per example, with shape `[batch]` or `[batch, 1]`. This operation
+accepts `fn`, `name`, `key`, and optional `max_values` (default 20000, a positive
+integer). Names must be unique across both pass-level logging operations and
+cannot be progress coordinates. There is no `bins` or `aggregate` option.
+
+The collector retains CPU values, without computation graphs, until the pass
+finishes. Memory grows with the number of examples. Non-finite values or exceeding
+`max_values` abort collection; no sampling or truncation is performed. The same
+single-process and full-coverage safeguards described above apply. An empty pass
+produces an empty table. Training and prediction without an explicit logger do
+not collect distributions.
+
+`WandbLogger.log_distribution(name, *, values, global_step=None)` creates a new
+`wandb.Table` with column `value` and calls `wandb.plot.histogram`. W&B performs the
+binning. Each pass logs under the same chart key at its final step, with existing
+progress coordinates and `commit=False`, independently of `log_every_n_steps`.
+The sink also rejects values exceeding the installed W&B artifact table limit
+(`Table.MAX_ARTIFACT_ROWS`); increasing `max_values` alone does not override that
+limit. Charts query this artifact-backed table. W&B's legacy media preview file
+may contain fewer rows because of its separate `Table.MAX_ROWS` limit. Choose fixed-bin `log_histogram` when
+bounded memory or larger datasets are required.
+
+In the W&B custom chart editor, use `historyTable` rather than `summaryTable`,
+keep the generated table key, and enable **Show step selector** to select earlier
+pass snapshots. The plot still shows values against counts. Other built-in
+logging backends inherit an optional no-op `DataLogger.log_distribution` sink;
+custom backends can override it. `DistributedLogger` forwards only on rank zero,
+but distributed full-pass collection remains unsupported.

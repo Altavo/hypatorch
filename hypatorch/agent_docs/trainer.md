@@ -81,7 +81,7 @@ Omitting `logger` (or passing `None`) keeps callback-only prediction, even when
 `Trainer(logger=...)` has a training logger. In that case logging configuration
 is not inspected and prediction does not advance trainer logging coordinates.
 
-With a logger, full-pass histograms collect merged inputs/outputs from every
+With a logger, full-pass histograms and raw-value distributions collect merged inputs/outputs from every
 batch and emit only after natural exhaustion, coverage checks, and successful
 callback completion. Existing audio, image, text, and table entries log the
 **first prediction batch only**; `sample_index` retains its batch-local meaning.
@@ -91,7 +91,7 @@ Prediction logging currently requires single-process execution. Histograms
 reject dropping/subset/custom-batch loaders and check map-style sample counts;
 for iterable datasets, coverage is exhaustion of the supplied stream. Training
 limits (`max_samples`, `max_val_samples`, `max_epochs`) do not cap prediction.
-A stop request or exception prevents full-pass histogram emission; already
+A stop request or exception prevents full-pass histogram/distribution emission; already
 logged first-batch media cannot be retracted. Clear a stop request before retrying.
 
 Logging advances `global_step` for each batch and reserves a final step for

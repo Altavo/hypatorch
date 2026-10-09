@@ -27,6 +27,7 @@ DOCUMENTED_SURFACE: list[str] = [
     "hypatorch.logger.WandbLogger",
     "hypatorch.logger.MLflowLogger",
     "hypatorch.validation_logging.HistogramCollector",
+    "hypatorch.validation_logging.DistributionCollector",
 ]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +65,7 @@ def _current_surface() -> dict[str, list[str]]:
     surface["hypatorch.logger.WandbLogger.log_media"] = _surface_names(logger.WandbLogger.log_media)
     surface["hypatorch.logger.WandbLogger.log_table"] = _surface_names(logger.WandbLogger.log_table)
     surface["hypatorch.logger.WandbLogger.log_histogram"] = _surface_names(logger.WandbLogger.log_histogram)
+    surface["hypatorch.logger.WandbLogger.log_distribution"] = _surface_names(logger.WandbLogger.log_distribution)
     return surface
 
 

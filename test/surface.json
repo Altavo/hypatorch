@@ -36,6 +36,11 @@
   "hypatorch.logger.WandbLogger": [
     "log_every_n_steps"
   ],
+  "hypatorch.logger.WandbLogger.log_distribution": [
+    "global_step",
+    "name",
+    "values"
+  ],
   "hypatorch.logger.WandbLogger.log_histogram": [
     "bin_edges",
     "counts",
@@ -113,6 +118,11 @@
     "loader_args",
     "logger",
     "model"
+  ],
+  "hypatorch.validation_logging.DistributionCollector": [
+    "key",
+    "max_values",
+    "name"
   ],
   "hypatorch.validation_logging.HistogramCollector": [
     "bins",
