@@ -62,12 +62,44 @@ restores all of it.
 
 ## Inference
 
-`Trainer.predict(model, dataset)` runs every operation per batch under `no_grad`
-in `predict` mode, with no optimizers, losses, metrics or logging, and emits
-Lightning-shaped callback events: `on_predict_start`,
-`on_predict_batch_end(output, batch, batch_idx)`, `on_predict_end`. Each callback
-receives the merged input and output dict, so pass-through keys such as sample
-ids are available alongside predictions.
+`Trainer.predict(model, dataset, loader_args=None, *, logger=None)` runs every
+operation per batch under `no_grad` in `predict` mode. It never runs optimizers,
+losses, metric assessments, or checkpoint saving. Scores for logging must be
+ordinary mapping outputs (or input keys).
+
+Callbacks are optional. When configured, prediction emits `on_predict_start`,
+`on_predict_batch_end(output, batch, batch_idx)`, and `on_predict_end`. Each
+callback receives the merged input and output dict, including pass-through IDs.
+
+Pass a constructed logger explicitly to opt into operation-level `logging`:
+
+```python
+trainer.predict(model, validation_loader, logger=data_logger)
+```
+
+Omitting `logger` (or passing `None`) keeps callback-only prediction, even when
+`Trainer(logger=...)` has a training logger. In that case logging configuration
+is not inspected and prediction does not advance trainer logging coordinates.
+
+With a logger, full-pass histograms collect merged inputs/outputs from every
+batch and emit only after natural exhaustion, coverage checks, and successful
+callback completion. Existing audio, image, text, and table entries log the
+**first prediction batch only**; `sample_index` retains its batch-local meaning.
+Cross-batch media selection is not supported. Collector state is fresh per call.
+
+Prediction logging currently requires single-process execution. Histograms
+reject dropping/subset/custom-batch loaders and check map-style sample counts;
+for iterable datasets, coverage is exhaustion of the supplied stream. Training
+limits (`max_samples`, `max_val_samples`, `max_epochs`) do not cap prediction.
+A stop request or exception prevents full-pass histogram emission; already
+logged first-batch media cannot be retracted. Clear a stop request before retrying.
+
+Logging advances `global_step` for each batch and reserves a final step for
+pass-level output, including empty passes. Training/validation step counters
+and training `samples` do not advance. The logger's `epoch_done()` flushes the
+pass; prediction does not finalize the tracking run. The caller owns that run's
+lifetime. W&B's default x-axis remains training samples; use `global_step` when
+inspecting prediction progress.
 
 ## Distributed
 
@@ -90,7 +122,8 @@ inside them.
 ## Full-pass logging
 
 Operation logging may configure [full-pass histograms](losses-and-metrics.md#histograms-over-a-complete-validation-pass).
-The trainer creates collectors at validation start, updates them on every batch,
+The trainer creates collectors at validation start (or prediction start with an
+explicit logger), updates them on every batch,
 and emits only after natural exhaustion and coverage checks, before the scalar
 epoch report. This requires single-process execution and uncapped validation
 (`max_val_samples: null`); known dropping/subset loaders are rejected. Interrupts

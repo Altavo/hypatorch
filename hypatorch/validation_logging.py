@@ -1,4 +1,4 @@
-"""Validation-pass collection independent of tracking SDKs and training wrappers."""
+"""Full-pass collection independent of tracking SDKs and training wrappers."""
 
 from collections.abc import Mapping, Sequence
 from numbers import Real
@@ -111,13 +111,13 @@ def validation_collectors(entries):
         if not isinstance(entry, Mapping):
             raise TypeError("Logging entries must be mappings")
         if "aggregate" in entry:
-            raise ValueError("aggregate is not supported; log_histogram always collects the full validation pass")
+            raise ValueError("aggregate is not supported; log_histogram always collects the full validation or prediction pass")
         if entry.get("fn") != "log_histogram":
             continue
         kwargs = {key: value for key, value in entry.items() if key != "fn"}
         collector = HistogramCollector(**kwargs)
         if collector.name in names:
-            raise ValueError(f"Duplicate validation histogram name: {collector.name!r}")
+            raise ValueError(f"Duplicate pass-level histogram name: {collector.name!r}")
         names.add(collector.name)
         collectors.append(collector)
     return collectors

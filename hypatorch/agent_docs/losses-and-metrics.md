@@ -353,6 +353,12 @@ validation passes. In Python the same API is available as
 
 Use this when every evaluated example must contribute one numeric observation,
 without retaining all observations or reducing them to batch averages.
+This feature also runs over prediction with `Trainer.predict(..., logger=logger)`.
+Prediction uses the same configuration and coverage checks, without computing
+losses or metric assessments. `max_val_samples` only applies to validation.
+Audio and table entries still use the first batch of either pass. See
+[Inference](trainer.md#inference) for the prediction logging lifecycle.
+
 This feature is single-process only. It consumes ordinary model inputs/outputs;
 it does not compute a metric or depend on a consumer's training routine.
 

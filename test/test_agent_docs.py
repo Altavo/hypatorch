@@ -58,6 +58,8 @@ def _current_surface() -> dict[str, list[str]]:
     for dotted in DOCUMENTED_SURFACE:
         module_name, _, attribute = dotted.rpartition(".")
         surface[dotted] = _surface_names(getattr(import_module(module_name), attribute))
+    trainer = import_module("hypatorch.train")
+    surface["hypatorch.train.Trainer.predict"] = _surface_names(trainer.Trainer.predict)
     logger = import_module("hypatorch.logger")
     surface["hypatorch.logger.WandbLogger.log_media"] = _surface_names(logger.WandbLogger.log_media)
     surface["hypatorch.logger.WandbLogger.log_table"] = _surface_names(logger.WandbLogger.log_table)

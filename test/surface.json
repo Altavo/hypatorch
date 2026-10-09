@@ -108,6 +108,12 @@
     "seed",
     "strategy"
   ],
+  "hypatorch.train.Trainer.predict": [
+    "dataset",
+    "loader_args",
+    "logger",
+    "model"
+  ],
   "hypatorch.validation_logging.HistogramCollector": [
     "bins",
     "key",

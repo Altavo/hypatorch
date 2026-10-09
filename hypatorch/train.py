@@ -729,28 +729,29 @@ class Trainer:
 
         return output_dict, metrics, step, global_step
 
-    def _validate_full_validation(self, dataset, loader_args=None):
+    def _validate_full_pass(self, dataset, loader_args=None, *, prediction=False):
         """Reject execution/loader settings that cannot promise a complete pass.
 
         An iterable defines its own stream; its natural exhaustion is the
         coverage boundary. Map-style loaders must visit each dataset position
         once, using the standard sequential or non-replacement random sampler.
         """
+        phase = "prediction" if prediction else "validation"
         if self.distributed.enabled:
-            raise ValueError("Validation-pass histograms currently require single-process validation")
-        if self.max_val_samples is not None:
+            raise ValueError(f"Pass-level histograms currently require single-process {phase}")
+        if not prediction and self.max_val_samples is not None:
             raise ValueError("Validation-pass histograms require max_val_samples=None (no cap)")
         if dataset is None:
-            raise ValueError("Validation-pass histograms require a validation dataset")
+            raise ValueError(f"Pass-level histograms require a {phase} dataset")
         if not isinstance(dataset, DataLoader):
             settings = loader_args or {}
             if settings.get("drop_last") or settings.get("sampler") is not None or settings.get("batch_sampler") is not None:
-                raise ValueError("Full validation requires drop_last=False and no custom sampler")
+                raise ValueError(f"Full {phase} requires drop_last=False and no custom sampler")
             return None
         if dataset.drop_last or getattr(dataset.batch_sampler, "drop_last", False):
-            raise ValueError("Full validation requires drop_last=False")
+            raise ValueError(f"Full {phase} requires drop_last=False")
         if type(dataset.batch_sampler) is not BatchSampler:
-            raise ValueError("Full validation requires standard automatic batching")
+            raise ValueError(f"Full {phase} requires standard automatic batching")
         if isinstance(dataset.dataset, IterableDataset):
             return None
         expected = len(dataset.dataset)
@@ -759,7 +760,7 @@ class Trainer:
             return expected
         if type(sampler) is RandomSampler and not sampler.replacement and sampler.num_samples == expected:
             return expected
-        raise ValueError("Full validation requires a sampler that visits every dataset position once")
+        raise ValueError(f"Full {phase} requires a sampler that visits every dataset position once")
 
     def epoch(
         self,
@@ -776,7 +777,7 @@ class Trainer:
         state_model = self._stateful_model(model)
         operations = state_model.operations.keys()
         collectors = validation_collectors(state_model.iter_logging_entries()) if mode == "val" else []
-        expected_samples = self._validate_full_validation(dataset) if collectors else None
+        expected_samples = self._validate_full_pass(dataset) if collectors else None
         if collectors and self.should_stop:
             raise RuntimeError("Cannot start full-pass histogram collection after a stop request")
         evaluated_samples = 0
@@ -994,7 +995,7 @@ class Trainer:
         # Validate on every rank before training, not only in rank-zero's
         # validation branch, so unsupported execution cannot strand a barrier.
         if validation_collectors(self.state_model.iter_logging_entries()):
-            self._validate_full_validation(val_dataset, loader_args)
+            self._validate_full_pass(val_dataset, loader_args)
 
         max_epochs = self.max_epochs
         if max_epochs is None:
@@ -1150,46 +1151,93 @@ class Trainer:
             checkpoint_path=checkpoint_path,
         )
 
-    def predict(self, model: Model, dataset, loader_args=None):
-        """Run inference over ``dataset``, emitting per-batch events to the
-        callbacks passed to ``Trainer(callbacks=...)`` (Lightning-style).
+    def predict(self, model: Model, dataset, loader_args=None, *, logger=None):
+        """Run prediction callbacks, optionally logging configured model outputs.
 
-        Drives ``model(input_dict, operation_name, mode='predict')`` — the same
-        forward path the training/validation steps use — under ``no_grad`` and
-        the autocast context, with no optimizers, loss, metrics, or logging.
-        Each callback receives the merged input+output dict, so both the model
-        predictions and any pass-through inputs (e.g. sample ids) are available.
+        An explicit logger enables full-pass histogram collection and first-batch
+        media/table logging. Omitting it preserves callback-only prediction, even
+        if this trainer has a training logger. No losses or metric assessments,
+        optimizers, or checkpoints run in either case. Callbacks are optional.
         """
+        state_model = self._stateful_model(model)
+        collectors = validation_collectors(state_model.iter_logging_entries()) if logger is not None else []
+        if logger is not None and self.distributed.enabled:
+            raise ValueError("Prediction logging currently requires single-process execution")
+        if collectors:
+            # Inspect the original loader too: adapting iterable loaders may
+            # otherwise discard a custom batch sampler before we can reject it.
+            self._validate_full_pass(dataset, loader_args, prediction=True)
+        if logger is not None and self.should_stop:
+            raise RuntimeError("Cannot start prediction logging after a stop request")
         model.to(self.device)
         model.eval()
-        operations = list(self._stateful_model(model).operations.keys())
+        operations = list(state_model.operations.keys())
         loader = self._as_dataloader(
             dataset,
             shuffle=False,
             loader_args=dict(loader_args or {}),
             epoch=0,
         )
-        for callback in self.callbacks:
-            callback.on_predict_start()
-
-        for batch_idx, batch in enumerate(loader):
-            input_dict = self._input_to_device(batch)
-            output_dict = {}
-            with torch.no_grad(), self._forward_context(mode="predict"):
-                for operation_name in operations:
-                    update_output(
-                        model(
-                            input_dict=shared_dict(input_dict, output_dict),
-                            operation_name=operation_name,
-                            mode="predict",
-                        ),
-                        output_dict,
-                        operation_name,
-                    )
-            prediction = shared_dict(input_dict, output_dict)
-
+        expected_samples = self._validate_full_pass(loader, prediction=True) if collectors else None
+        evaluated_samples = 0
+        with self._signal_handler_context() if logger is not None else nullcontext():
             for callback in self.callbacks:
-                callback.on_predict_batch_end(prediction, batch, batch_idx)
+                callback.on_predict_start()
 
-        for callback in self.callbacks:
-            callback.on_predict_end()
+            for batch_idx, batch in enumerate(loader):
+                if logger is not None and self.should_stop:
+                    raise RuntimeError("Prediction interrupted; no full-pass histogram was logged")
+                input_dict = self._input_to_device(batch)
+                output_dict = {}
+                with torch.no_grad(), self._forward_context(mode="predict"):
+                    for operation_name in operations:
+                        update_output(
+                            model(
+                                input_dict=shared_dict(input_dict, output_dict),
+                                operation_name=operation_name,
+                                mode="predict",
+                            ),
+                            output_dict,
+                            operation_name,
+                        )
+                prediction = shared_dict(input_dict, output_dict)
+
+                if collectors:
+                    batch_size = self._infer_batch_size(input_dict)
+                    if batch_size <= 0:
+                        raise ValueError("Full-pass histograms require an identifiable nonempty batch dimension")
+                    for collector in collectors:
+                        collector.update(prediction, batch_size)
+                    evaluated_samples += batch_size
+                if logger is not None:
+                    step = self.global_step
+                    self.global_step += 1
+                    logger.log_value("global_step", step)
+                    logger.log_value("samples", self.train_samples)
+                    if batch_idx == 0:
+                        state_model.log_data(logger=logger, step=step, data_dict=prediction)
+                    logger.step_done()
+
+                for callback in self.callbacks:
+                    callback.on_predict_batch_end(prediction, batch, batch_idx)
+
+            if logger is not None and self.should_stop:
+                raise RuntimeError("Prediction interrupted; no full-pass histogram was logged")
+            if expected_samples is not None and evaluated_samples != expected_samples:
+                raise RuntimeError(
+                    f"Incomplete prediction coverage: evaluated {evaluated_samples} of {expected_samples} samples"
+                )
+            for callback in self.callbacks:
+                callback.on_predict_end()
+            if logger is not None:
+                if self.should_stop:
+                    raise RuntimeError("Prediction interrupted; no full-pass histogram was logged")
+                # A fresh step also supports backends/callbacks that committed
+                # the last batch. Empty passes reserve a step as well.
+                step = self.global_step
+                self.global_step += 1
+                logger.log_value("global_step", step)
+                logger.log_value("samples", self.train_samples)
+                for collector in collectors:
+                    collector.emit(logger, step)
+                logger.epoch_done()
