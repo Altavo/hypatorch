@@ -193,7 +193,9 @@ logging:
     sample_rate: 16000
 ```
 
-Each selected sample uses its own length and is converted independently. The
+Each selected sample uses its own length and is converted independently.
+Bfloat16 tensors are converted to float32 before NumPy media conversion; the
+source tensor and its gradient state are unchanged. The
 collection preserves the requested order, including repeated indices. A one-item
 list still emits a collection; an integer emits one object as before. Constructor
 options (such as `caption`) are shared across all selected samples.
@@ -500,3 +502,20 @@ pass snapshots. The plot still shows values against counts. Other built-in
 logging backends inherit an optional no-op `DataLogger.log_distribution` sink;
 custom backends can override it. `DistributedLogger` forwards only on rank zero,
 but distributed full-pass collection remains unsupported.
+
+
+## Assembled image history
+
+`log_images` assembles the first sample's selected tensors into a single figure.
+With W&B, set `name` to a stable key to retain successive validation snapshots in
+one media panel and navigate them by step. Omitting `name` preserves the legacy
+per-step key names. Logging leaves the step open for other media and metrics.
+
+```yaml
+logging:
+  - fn: log_images
+    name: val/images
+    log_image_keys:
+      - {key: mel, len_key: null}
+      - {key: mel_pred, len_key: null}
+```

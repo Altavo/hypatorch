@@ -640,3 +640,35 @@ def test_real_wandb_mixed_table(tmp_path, monkeypatch):
         assert run.summary["examples"]["_type"] == "table-file"
         assert run.summary["examples"]["nrows"] == 1
         assert run.summary["examples"]["ncols"] == 4
+
+
+@pytest.mark.parametrize("media_type", ["audio", "image"])
+def test_bfloat16_media_converts_to_float32(monkeypatch, media_type):
+    run = _FakeRun()
+    run.log = lambda *args, **kwargs: None
+    sdk = _fake_wandb(run)
+    captured = []
+    setattr(sdk, media_type.capitalize(), lambda value, **kwargs: captured.append(value) or "media")
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    source = torch.ones(2, 4, 8, dtype=torch.bfloat16, requires_grad=True)
+    WandbLogger().log_media("preview", data_dict={"x": source}, key="x",
+                           sample_index=0, media_type=media_type)
+    assert str(captured[0].dtype) == "float32"
+    assert captured[0].shape == ((8, 4) if media_type == "audio" else (4, 8))
+    assert source.dtype == torch.bfloat16 and source.requires_grad
+
+
+def test_assembled_images_share_stable_key_and_keep_step_open(monkeypatch):
+    run = _FakeRun()
+    calls = []
+    run.log = lambda data, **kwargs: calls.append((data, kwargs))
+    sdk = _fake_wandb(run)
+    sdk.Image = lambda figure: "assembled"
+    monkeypatch.setitem(sys.modules, "wandb", sdk)
+    logger = WandbLogger()
+    for step in (10, 20):
+        logger.log_images(name="val/images", data_dict={"mel": torch.ones(2, 4, 8)},
+                          log_image_keys=[{"key": "mel"}], global_step=step)
+    assert [payload["val/images"] for payload, _ in calls] == ["assembled", "assembled"]
+    assert [options for _, options in calls] == [
+        {"step": 10, "commit": False}, {"step": 20, "commit": False}]

@@ -372,7 +372,10 @@ class WandbLogger(DataLogger):
                 raise ValueError("sample_index must be a nonnegative integer or None")
             value = value[sample_index]
         if isinstance(value, torch.Tensor):
-            value = value.detach().cpu().numpy()
+            value = value.detach().cpu()
+            if value.dtype == torch.bfloat16:
+                value = value.float()
+            value = value.numpy()
         if len_key is not None and not hasattr(value, "shape"):
             raise TypeError("len_key requires tensor or array media")
         if len_key is not None or (media_type == "audio" and hasattr(value, "shape")):
@@ -734,11 +737,13 @@ class WandbLogger(DataLogger):
             return
 
         figure = self._plot_images(data_dict, log_image_keys)
-        self._run.log(
-            {f"images/log_step_{global_step}": self._wandb.Image(figure)},
-            step=global_step,
-        )
-        plt.close(figure)
+        try:
+            self.log_media(
+                kwargs.get("name", f"images/log_step_{global_step}"),
+                self._wandb.Image(figure), global_step=global_step,
+            )
+        finally:
+            plt.close(figure)
 
     def log_text(self, *args, **kwargs):
         if kwargs:
